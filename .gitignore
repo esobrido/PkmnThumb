@@ -1,0 +1,5 @@
+vendor/
+toolsrc/
+game/build/
+artifacts/
+__pycache__/

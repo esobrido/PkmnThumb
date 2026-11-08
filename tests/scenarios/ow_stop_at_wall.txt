@@ -1,0 +1,13 @@
+# Walking into a wall: the player walks up to it and stops there.
+#
+# The wall is a single cell, so its 32x32 block is blocked in only one
+# quadrant — this also covers the mixed-quadrant collision the real maps use.
+kind unit
+
+map 4x2
+..#.
+....
+
+start 0 0 right
+hold right 64            # would be 2 cells with a clear path
+expect 1 0 right

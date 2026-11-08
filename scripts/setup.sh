@@ -6,13 +6,22 @@
 # only ever used from there. Re-run after the worktree is restored: system
 # packages and build output do not survive archiving, but the sources do.
 #
-#   ./setup.sh          # cmake + SDL2 + build_host
+#   scripts/setup.sh              # cmake + SDL2 + build_host + ARM toolchain
+#   scripts/setup.sh --host-only  # skip the ~141 MB ARM toolchain download
+#
+# The ARM toolchain is what builds the deployable .mote (the host .so is only
+# for the emulator). It goes under toolsrc/ like everything else, so nothing is
+# installed system-wide.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/toolsrc"
 CMAKE_VER=3.30.5
 SDL_VER=2.30.9
+ARM_VER=13.3.rel1
+ARM_DIR="arm-gnu-toolchain-$ARM_VER-x86_64-arm-none-eabi"
+HOST_ONLY=""
+[ "${1:-}" = "--host-only" ] && HOST_ONLY=1
 
 mkdir -p "$SRC"
 cd "$SRC"
@@ -44,6 +53,14 @@ if [ ! -f sdl-install/lib/libSDL2.so ]; then
     "$CMAKE" --install sdl-build >> /tmp/sdl_cfg.log 2>&1
 fi
 
+if [ -z "$HOST_ONLY" ] && [ ! -x "$SRC/$ARM_DIR/bin/arm-none-eabi-gcc" ]; then
+    echo "== downloading the ARM GNU toolchain $ARM_VER (141 MB, for the .mote)"
+    curl -sL -o armgnu.tar.xz \
+        "https://developer.arm.com/-/media/Files/downloads/gnu/$ARM_VER/binrel/arm-gnu-toolchain-$ARM_VER-x86_64-arm-none-eabi.tar.xz"
+    tar xf armgnu.tar.xz
+    rm -f armgnu.tar.xz
+fi
+
 echo "== building mote_host"
 "$CMAKE" -S "$ROOT/vendor/mote" -B "$ROOT/vendor/mote/build_host" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$SRC/sdl-install" > /dev/null
@@ -54,7 +71,10 @@ cat <<EOF
 Ready.
 
   extract data :  python3 tools/extract.py
-  build game   :  LD_LIBRARY_PATH=$SRC/sdl-install/lib ./vendor/mote/tools/mote build game
-  run (visible):  ./run.sh
-  screenshot   :  ./shot.sh artifacts/overworld.png 45
+  build game   :  scripts/build.sh            (host module)
+  build device :  scripts/build.sh --device   (deployable .mote)
+  unit tests   :  scripts/test.sh
+  run (visible):  scripts/run.sh
+  screenshot   :  scripts/shot.sh artifacts/overworld.png 45
+  perf         :  scripts/perf.sh 900
 EOF

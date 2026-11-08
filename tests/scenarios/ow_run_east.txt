@@ -1,0 +1,14 @@
+# Running east across open ground.
+#
+# `run` is the walking step at twice the speed: 2 px per frame instead of 1, so
+# the same 16 px cell takes 8 frames. Same map and start as ow_walk_east, which
+# needs 64 frames for these 4 cells; running needs half.
+kind unit
+
+map 6x2
+......
+......
+
+start 0 0 right
+run right 32             # 32 frames * 2 px = 64 px = 4 cells
+expect 4 0 right

@@ -33,6 +33,54 @@ Errores que provoca confundir esto:
 (`data/maps/blocks.asm` hace `INCBIN` del `.lzp`), pero el `.ablk` del repo es crudo y
 se lee directamente. New Bark Town: 12×9 = 108 bytes → 384×288 px.
 
+Trampa — **no todo mapa tiene `.ablk` propio**. `data/maps/blocks.asm` comparte el
+bloque de varias casas por etiqueta:
+
+```
+PlayersNeighborsHouse_BlockData:
+Route30BerrySpeechHouse_BlockData:
+ValenciaHouse_BlockData:
+	INCBIN "maps/JohtoHouse4.ablk"
+```
+
+El extractor (`map_block_path()`) busca `maps/<Map>.ablk`; si no existe, lee el
+`INCBIN` de la etiqueta `<Map>_BlockData`. Sin ese respaldo, la casa de los vecinos
+salía como mapa vacío.
+
+### Warps
+
+```
+; maps/NewBarkTown.asm
+def_warp_events
+	warp_event 15,  5, PLAYERS_HOUSE_1F, 1   ; x, y, mapa destino, nº de warp destino
+	warp_event 10,  2, ELMS_HOUSE, 2
+```
+
+`MACRO warp_event` (`macros/scripts/maps.asm`) lo deja en el ROM como
+`db y, x, warp_to, map_id`, y **el número de warp es 1-based**: apunta a la fila N del
+`def_warp_events` del mapa destino. New Bark Town tiene 5; cuatro son puertas y una
+es la estera de la casa de Elm en (10,2).
+
+La clase de warp no está en el evento, se deduce del **tile que hay debajo** (colisión
+del cuadrante, `warp_kind()` en el extractor):
+
+| `kind` | Tile | Cuándo dispara |
+|---|---|---|
+| `PC_WARP_DOOR` (0) | `DOOR` | al **terminar** el paso sobre la celda |
+| `PC_WARP_CARPET` (1) | `WARP_CARPET_DOWN/UP/LEFT/RIGHT` | de pie encima, con esa dirección mantenida y el paso bloqueado |
+| `PC_WARP_STEP` (2) | `STAIRCASE`, `LADDER`, `CAVE`, `WARP_PANEL`… | como una puerta |
+
+Un warp cuyo destino no está en el build queda con `map = -1`: el tile existe y se
+pisa, pero no lleva a ninguna parte (las escaleras a los 2.º pisos, hoy).
+
+El punto de reaparición de cada mapa no está en el mapa, sino en
+`data/maps/spawn_points.asm` (`spawn NEW_BARK_TOWN, 15, 6`). Aunque el comentario del
+macro diga `map, y, x`, el motor carga los dos bytes en `wXCoord` y `wYCoord`
+(`engine/overworld/spawn_points.asm`), así que son `x, y`: Cherrygrove con `29, 4`
+sólo encaja así en un mapa de 40×22 celdas. El extractor lo emite como
+`PcMapDef.spawn_x / spawn_y`; New Bark Town da (15,6), la celda pegada a la puerta de
+casa.
+
 ## Metatiles y atributos
 
 ```
@@ -51,8 +99,12 @@ pero la fuente legible es el `.asm`: es la que parsea el extractor.
 - `johto_traditional`: 4048 B ⇒ 253 metatiles, ids de tile 0..160.
 - Ambas tablas tienen el mismo tamaño (253×16) pero significados distintos: no
   confundirlas.
-- **La colisión viene en orden `BL, TL, BR, TR`** y el render la quiere en orden de
-  pantalla `TL, TR, BL, BR`. El extractor reordena (`order = (1, 3, 0, 2)`).
+- **La colisión viene en orden de pantalla `TL, TR, BL, BR`**, que es también el que
+  quiere el render: **no hay que reordenar nada**. Lo confirma
+  `GetCoordTileCollision` (`home/map.asm`), que indexa
+  `(x & 1) + 2 * (y & 1)` sobre los cuatro bytes del `tilecoll`. Una versión anterior
+  del extractor los remapeaba con `order = (1, 3, 0, 2)` y eso giraba cada metatile
+  180°: las puertas se leían como muro y el agua como hierba. Ver `docs/06`.
 - Caminable = `FLOOR`, `TALL_GRASS`, `LADDER`, `WARP_CARPET_*`, `WATER`, `DOOR`… el
   resto bloquea. Está en `COLL_WALKABLE` de `tools/extract.py`; conviene revisarla
   contra `constants/collision_constants.asm` si aparece algún tile raro.
@@ -128,6 +180,13 @@ a ±1)
 El índice 0 y 1 de `gray` están mucho más cerca entre sí que los de `green`: eso es lo
 que hace que una textura de 1 px de alto se lea como relieve suave y no como rayas.
 
+Trampa nº 3 — **dentro de un edificio no se usa la franja horaria, sino el grupo
+`indoor`**. El original lo elige por la variable de entorno del mapa (`ENV_INDOOR` en
+`data/maps/maps.asm`), y es la razón de que el interior de una casa no tenga los
+verdes del exterior aunque el arte sea el mismo tileset: `johto_house` sólo aporta las
+formas, el color lo pone la paleta. El extractor emite `bg_pal` (exterior) y
+`bg_pal_indoor`, y `PcMapDef.pal` dice cuál toca.
+
 ## Sprites de overworld
 
 ```
@@ -181,6 +240,42 @@ escapes) y generar texto plano en C. Los comandos (`<PLAYER>`, `<RAM>`, `<NUM>`,
 Fuente: `gfx/font/*.png` — `normal.png` es 128×64 = 16×8 celdas de 8×8 (fuente
 principal); también `bold`, `italic`, `narrow`, `serif`, `chicago`, `micr`, `space`.
 
+### Comandos de texto
+
+Los bytes `$00`-`$09` y `$52`-`$5d` no son caracteres: son órdenes que el motor de texto
+interpreta (`home/text.asm`, tabla `TextCommands`) y **arrastran argumentos**. Un impresor
+que no los conozca no los ignora: imprime el comando *y sus argumentos* como letras.
+
+| Byte | Comando | Argumentos | Qué hace el original |
+|---|---|---|---|
+| $00 | `<START>` | — | la cadena empieza aquí |
+| $01 | `<RAM>` | dirección (2) | imprime la cadena que hay en WRAM |
+| $02 | `<WAIT>` | — | cursor parpadeante; espera a A/B |
+| $03 | `<ASM>` | — | salta a código encajado en el propio flujo (o lo termina) |
+| $04 | `<NUM>` | dir. (2) + formato (1) | imprime el número de esa dirección, con `formato & $f` dígitos |
+| $05 | `<PAUSE>` | — | 30 frames de pausa, o A/B |
+| $06 | `<SOUND>` | id de efecto (1) | `PlaySFX` + `WaitSFX` |
+| $07 | `<DAY>` | — | "Sunday"…"Saturday" |
+| $08 | `<FAR>` | banco + dirección (3) | imprime una cadena de otro banco |
+| $09 | `<PLURAL>` | — | elige singular o plural |
+| $52 | `<DONE>` | — | fin |
+| $54 | `<PROMPT>` | — | fin y pregunta sí/no |
+| $55 | `<LNBRK>` | — | salto sin espacio |
+| $56 | `<NEXT>` | — | página nueva, sin borrar |
+| $57 | `<LINE>` | — | línea nueva |
+| $58 | `<CONT>` | — | línea nueva sin espacio |
+| $59 | `<PARA>` | — | página nueva |
+| $5a-$5c | `<TARGET>` `<USER>` `<ENEMY>` | — | nombres de los combatientes |
+| $5d | `<CTXT>` | — | marca del decodificador contextual |
+
+El extractor emite esa tabla **parseando `constants/charmap.asm`** (`text_commands()`),
+no copiándola: un byte transcrito mal imprimiría basura en vez de fallar al extraer.
+
+De los 23 textos extraídos **ninguno usa comandos** aparte de `<START>`: son diálogos
+planos. Los comandos llegan con los scripts de mapa (fase 2), y el impresor del port ya
+los consume todos (`text/box.c`), porque un comando desconocido no se ignora solo:
+arrastra sus argumentos consigo.
+
 ## Scripts de mapa
 
 `macros/scripts/maps.asm` define macros (`def_scene_scripts`, `scene_script`,
@@ -192,12 +287,140 @@ Plan del port: no traducir los scripts a mano ni reescribirlos; extraer el bytec
 escribir un **intérprete nuevo** en C con la misma semántica de comandos. Eso da acceso
 gratis a los 458 mapas con sus eventos, textos, warps y escenas.
 
+## Texto
+
+El texto del mapa **ya es bytecode**, no una cadena: `text "..."` emite `$00`
+(`<START>`) y luego los bytes del charmap; `line`/`cont` emiten `$57`/`$58`,
+`para`/`next` emiten `$59`/`$56` y `done` emite `$52`. Los textos son además el
+punto donde el juego mete nombres y símbolos, con "n-gramas" (una ranura que
+imprime varias letras).
+
+`constants/charmap.asm` define tres charmaps; el de los textos es `compressing`, que
+añade a los caracteres normales:
+
+| Fuente | Byte | Imprime |
+|---|---|---|
+| `#` | `$4d` | "Poké" (cuatro glifos) |
+| `#mon` | `$4e` | "Pokémon" |
+| `<PLAYER>` | `$4f` | el nombre del jugador |
+| `<RIVAL>` | `$50` | el del rival |
+| `<TRENDY>` | `$51` | la frase de moda (aún no portada) |
+
+Como el ensamblador ya resolvió el charmap, el extractor sólo tiene que hacer el
+mapeo inverso (`maximal munch`, para que `#mon` gane a `#`) y emitir los bytes tal
+cual: no hay que imitar el compresor Huffman del ROM, porque los tres mapas de
+arranque suman **13 textos / 6 KB de header**, nada frente a los 16 MB de flash.
+
+`text_far`, `text_asm`, `text_ram` y `text_decimal` delegan en otro fichero o en
+código: el extractor los **salta** en vez de emitir media frase, y quedarán para
+el intérprete de scripts (SCR-02).
+
+### De un NPC a su texto
+
+El `object_event` no lleva el texto, así que hay que resolver un salto:
+
+```
+object_event ..., OBJECTTYPE_COMMAND, jumptextfaceplayer, Text_GearIsImpressive
+object_event ..., OBJECTTYPE_SCRIPT, 0, NewBarkTownTeacherScript
+```
+
+Con `OBJECTTYPE_COMMAND` el texto es el propio argumento. Con `OBJECTTYPE_SCRIPT`
+se busca en el script la primera referencia directa (`showtext`, `writetext`,
+`jumptext*`, `iftrue_jumptext*`) o el texto **inline** que sigue a
+`jumpthistextfaceplayer`. No se siguen saltos a otros scripts: eso es flujo de
+control y lo ejecutará la VM de scripts, no el extractor.
+
+### La fuente
+
+`gfx/font/normal.png` (128×64, 16 columnas de 8×8) y `common.png` (48×8) son las
+vistas previas del 1bpp que genera `rgbgfx -d1`: fondo blanco, **tinta negra**, tiles
+en orden de fila. El juego carga 114 tiles de `normal` en el tile `$80` (así que 'A'
+es el tile 0) y 6 de `common` en `$f2` (↑ ↓ ′ ″ <PHONE> <BLACK>). La regla
+`--trim-whitespace` de las fuentes sólo recorta tiles vacíos **del final**, de modo
+que no hay desplazamiento que compensar.
+
+`$7f` (espacio) no tiene arte: en el juego se carga un tile **opaco** desde
+`space.png` para tapar texto viejo; aquí el fondo del textbox ya es papel, así que
+una celda de espacio se queda vacía.
+
+### Las entradas del menú de pausa
+
+No están en `data/text`: son cadenas inline en el propio menú, porque se imprimen
+directamente en su caja (`engine/menus/start_menu.asm`):
+
+```
+.PokedexString:  db "#dex@"
+.PartyString:    db "#mon@"
+.PackString:     db "Bag@"
+.StatusString:   db "<PLAYER>@"
+```
+
+El `@` es el **terminador de cadena**, no un carácter (va detrás de la comilla). El
+extractor las pasa por el mismo charmap, así que `#dex` son **cuatro bytes** (`$4d`,
+`d`, `e`, `x`) y el juego imprime "POKédex" al expandir el n-grama: no hay una segunda
+ruta de texto para los menús.
+
+El original decide **qué** entradas mostrar en tiempo de ejecución (`wStatusFlags` bit
+0 para la Pokédex, `wPartyCount` para Pokémon, `wLinkMode` y el concurso de bichos para
+la bolsa); eso es estado de partida, que aún no existe. El port muestra las cuatro que
+siempre aplican, en el orden del juego: `#dex`, `#mon`, `Bag`, `<PLAYER>`. Save,
+Options, Exit, PokéGear y Quit vuelven con sus pantallas.
+
+### La pantalla de Option
+
+Tres ficheros, y ninguno es un texto suelto:
+
+- `engine/menus/options_menu.asm` — la lista de 13 ajustes y el `Done` final, cada uno con
+  sus valores (`"Slow   @"`, `"Switch @"`, `"12-hour@"`). Los valores están **padded a una
+  columna fija**, porque el original los imprime en la misma línea que el nombre; aquí van
+  debajo, así que el extractor les quita el relleno.
+- `data/options/option_names.asm` — los nombres (`"Text Autoscroll@"`, `"#dex Units@"`), en
+  el orden de su tabla `dw`, que es el orden del menú.
+- `data/options/default_options.asm` — los valores iniciales:
+
+```
+; wOptions1   BATTLE_EFFECTS | STEREO | FAST_TEXT
+; wOptions2   0   (zapatillas off, 12-hour, imperial, battle style Set)
+; wOptions3   0   (nicknames Ask, teclado ABCDEF)
+; wTextboxFrame 0 (Frame 01)
+```
+
+No todos los valores son cadenas: **Frame** es un número. `Options_Frame` guarda
+`wTextboxFrame` (0..19) y lo imprime con `PrintNum` como `+1` en dos columnas, así que el
+port guarda el índice 0..19 y dibuja "01".."20" en el sitio. Es el único sitio del port
+que formatea un número en vez de copiar bytes.
+
+Los tres bytes de opciones son bits repartidos (`wOptions1` tiene la velocidad de texto en
+los bits 0-1, el autoscroll en 2-3, el estéreo en 6...). El port los guarda como un índice
+por ajuste: la misma información, sin máscaras, y `LEFT/RIGHT` es un módulo.
+
 ## Música
 
 `audio/music/*.asm` (100 canciones) es un lenguaje de macros sobre 4 canales
 (`audio/` incluye el motor de sonido y los instrumentos). No hay forma barata de
 reutilizarlo: hay que re-expresarlo como notas/stream para Mote (`audio_note`,
 `audio_play_sfx`, o un mezclador propio vía `audio_set_stream`). Prioridad baja.
+
+## Lo que emite el extractor
+
+Un solo header, `game/src/gen/world.h`, con cinco grupos de tablas:
+
+```c
+bg_pal[8][4]                // paletas BG del grupo `day` (exterior)
+bg_pal_indoor[8][4]         // paletas BG del grupo `indoor` (interiores)
+pc_tilesets[PC_TS_COUNT]    // por tileset: tiles 2bpp, mt_tiles, mt_pal, mt_coll
+pc_sprites[PC_SPRITE_COUNT] // hojas 16x96 (6 frames de 16x16), compartidas por mapas
+pc_maps[PC_MAP_COUNT]       // { nombre, ancho, alto, bloques, tileset, objetos, n,
+                            //   warps, n_warps, pal, spawn_x, spawn_y }
+PcWarp warp_<mapa>[N]       // { x, y, mapa destino, nº de warp, kind, dir }
+```
+
+Los tilesets se deduplican: New Bark Town, Ruta 29 y Ciudad Cerezo usan
+`johto_traditional` y las cuatro casas `johto_house`, así que el arte de cada uno
+aparece una vez. Los objetos salen con coordenadas en píxeles (rejilla de 16),
+la **cara** (`0` abajo, `1` arriba, `2` izquierda, `3` derecha) tomada del
+`SPRITEMOVEDATA_STANDING_*`, y el **tipo de animación** (`0` quieto, `1` gira antihorario,
+`2` horario, `3` aleatorio) tomado de los `SPRITEMOVEDATA_SPIN*`.
 
 ## Cómo se valida todo esto sin hardware
 

@@ -1,0 +1,14 @@
+# Walking east across open ground.
+#
+# Grid: one character per 16x16 cell. '.' = walkable, '#' = blocked.
+# Positions are in cells (16 px); one frame of `hold` is 1 px, because the GB
+# walks one 16 px step in 16 frames at 60 fps.
+kind unit
+
+map 6x2
+......
+......
+
+start 0 0 right
+hold right 64            # 64 frames = 64 px = 4 cells
+expect 4 0 right

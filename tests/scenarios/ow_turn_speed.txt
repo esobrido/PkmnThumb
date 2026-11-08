@@ -1,0 +1,16 @@
+# A direction the player is not facing costs a turn in place first. With the
+# default Turning Speed of Slow that is 2 x 4 = 8 frames before the first pixel
+# of the step, so crossing a cell takes 24 frames instead of 16.
+kind unit
+
+map 2x2
+..
+..
+
+start 0 0 down
+hold right 7             # seven frames into the turn: not a pixel yet
+expect 0 0 down          # (the facing flips on the fourth, the step needs all eight)
+hold right 1
+expect 0 0 right
+hold right 16
+expect 1 0 right

@@ -1,0 +1,10 @@
+# The map edge blocks like a wall: the player cannot walk off the map.
+kind unit
+
+map 2x2
+..
+..
+
+start 1 0 left
+hold left 64
+expect 0 0 left

@@ -1,0 +1,14 @@
+# Walking into a wall: the player stops on the last free cell and keeps pushing
+# on the spot (the legs animate, the feet do not move). Holding the opposite
+# direction afterwards walks back the way it came, so the push left nothing
+# pending: no hidden step, no half cell.
+kind unit
+
+map 4x2
+...#
+....
+
+start 1 0 right
+hold right 40            # one cell east, then 24 frames of pushing the wall
+hold left 40             # 8 frames to turn round + 32 px = two cells back
+expect 0 0 left

@@ -15,15 +15,22 @@ paletas, texto, datos de Pokémon).
 | [04-port-architecture.md](04-port-architecture.md) | Decisiones de arquitectura del port, geometría, presupuesto de RAM/flash, qué se reutiliza y qué se reescribe |
 | [05-dev-workflow.md](05-dev-workflow.md) | Cómo se compila y se verifica aquí (sin root), extractor, capturas headless, entradas guionizadas |
 | [06-findings-log.md](06-findings-log.md) | Bitácora de hallazgos y **callejones sin salida**, para no repetirlos |
+| [07-conventions.md](07-conventions.md) | **Reglas de código**: fichero si es simple / carpeta si es complejo, test unitario obligatorio, formato de los escenarios |
 
 Plan de trabajo y estado por componente: [`../TASKS.md`](../TASKS.md).
+Instrucciones de operación para un agente de IA: [`../AGENTS.md`](../AGENTS.md).
 
 ## Estado en una frase
 
-El *slice* de overworld funciona de punta a punta (New Bark Town renderizado desde los
-datos originales, movimiento en rejilla de 16 px, colisión del propio juego, cámara,
-5 NPCs colocados por `object_event`), y el pipeline de extracción está validado. Falta
-texto, interacción/scripts, warps, batalla, audio y el resto de sistemas.
+La fase 0 está cerrada (salvo la mediciíon de fps en hardware): mapas reales, colisión
+del propio juego, cámara, NPCs con cara, giro y celda bloqueada, orden de dibujado por
+Y. La fase 1 ya hace hablar al juego: `A` frente a un NPC muestra su diálogo real del
+juego con la fuente original, refloweado a 15 columnas y paginado, y MENU abre el menú de
+pausa con las cuatro entradas reales. Ocho mapas cargan en caliente y **las puertas
+funcionan**: entras a las cinco casas de New Bark Town con el fundido de 10+10 frames del
+original y sales por la estera. Faltan las pantallas del menú, las conexiones entre
+mapas (andar de un mapa a otro), los scripts, la batalla, el audio y el resto de
+sistemas. El módulo compila a un `.mote` de 48 KB.
 
 ## Principio rector
 

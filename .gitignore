@@ -1,5 +1,7 @@
 vendor/
 toolsrc/
 game/build/
+tests/build/
 artifacts/
 __pycache__/
+dist/

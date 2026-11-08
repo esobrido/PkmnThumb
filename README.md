@@ -2,114 +2,113 @@
 
 A native port of [Polished Crystal](https://github.com/Rangi42/polishedcrystal) to the
 TinyCircuits **Thumby Color**, built as a [Mote](https://github.com/austinio7116/mote)
-game module. Not an emulator: the GBZ80 engine is replaced by C, while the game's
-*content* (maps, tilesets, collision, sprite art, palettes) is re-used as-is.
-
-Status: **slice 1 — the overworld**. New Bark Town renders from the original data,
-the player walks in 16 px grid steps with the map's own collision, the camera pans,
-and the five NPCs from the map's `object_event`s stand where the asm puts them.
-
-Documentation (findings, data formats, architecture, dev workflow): [`docs/`](docs/README.md).
-Full component inventory and phased work plan: [`TASKS.md`](TASKS.md).
+game module. Not an emulator: the game's *content* (maps, tilesets, collision, sprite
+art, palettes) is re-used as C tables extracted from the original repo, while the
+*engine* is rewritten in C.
 
 ![New Bark Town on the Thumby Color](docs/img/overworld.png)
 
-Walking west — camera panned, collision live: [docs/img/walk_left.png](docs/img/walk_left.png)
+**Status: phase 1 under way — the game talks, and you can go indoors.** Eight real maps
+load at runtime — New Bark Town, Route 29, Cherrygrove City and the five interiors of New
+Bark Town (Elm's lab, your house, your neighbours', Lyra's and Elm's) — drawn from the
+original block, metatile, palette and sprite data. The player walks in 16 px grid steps with the map's
+own collision, NPCs face the way their `object_event` says (spinners rotate, and they
+block their cell), sprites are drawn in Y order, and **pressing A in front of an NPC
+opens that NPC's real dialogue** — the game's own text bytecode, printed with the game's
+own 8×8 font, re-wrapped to 15 columns, paged and revealed a letter at a time.
 
-## Why this shape
+![Talking to an NPC in New Bark Town](docs/img/dialogue.png)
 
-Polished Crystal is ~11.7 MB of GBZ80 assembly, but almost everything that took
-years to author is **data**:
+**MENU opens the pause menu**: a window of the game's own entries (`#dex`, `#mon`, `Bag`,
+`<PLAYER>`, `Options` — so it prints *Pokédex*, *Pokémon* and your name), with a wrapping
+cursor and a scrolling window. The first four screens do not exist yet, so A just closes
+the menu; **Options opens the game's own settings screen**: all thirteen of them
+(*Text Autoscroll*, *Battle Style*, *#dex Units*, …) with their real values, LEFT/RIGHT to
+change one and the state kept in memory. Text speed is wired to the dialogue, so *Instant*
+really does print a page at once. Turning **Running Shoes** on (or leaving it off and
+holding B) works too: the player crosses a cell in 8 frames instead of 16, with the walk
+cycle at twice its usual speed. So does *Turning Speed*: asking for a direction you are not
+facing turns in place first — 8 frames at Slow, 4 at Fast — and a tap turns without taking
+a step. And walking into a wall, an NPC or the map edge has the original's push: the walk
+cycle keeps going on the spot while you stay on your cell, facing the obstacle.
 
-| Content | In the repo | In this port |
-|---|---|---|
-| Maps | `maps/<Map>.ablk` + `data/maps/maps.asm` | `map_blocks[]` |
-| Metatiles | `data/tilesets/<ts>_metatiles.bin` | `mt_tiles[253][16]` |
-| Collision | `data/tilesets/<ts>_collision.asm` | `mt_coll[253]` (bitmask) |
-| Tile art | `gfx/tilesets/<ts>.<common>.png` (2bpp) | `ts_tiles[176][16]` |
-| Tile palettes | `data/tilesets/<ts>_attributes.bin` | `mt_pal[253][16]` |
-| BG palettes | `gfx/tilesets/bg_tiles.pal` | `bg_pal[8][4]` (RGB565) |
-| NPC art | `gfx/sprites/<name>.png` (16x96) | `spr_*[24][16]` |
+**Doors work.** Walk into a doorway and the screen fades to white in 10 frames, the
+interior is loaded while it is white and it fades back in over 10 more — the original's
+`MAPSETUP_DOOR`, which is the whole door animation: Polished Crystal has no animated door
+tile. Inside, the tile colours switch to the game's `indoor` palette group. To leave,
+stand on the doormat and push down: warp carpets fire when the step in the direction you
+are holding cannot start, exactly like `CheckWarp`. Floors that were never extracted
+(the 2F of the two houses, the stairs in your house) are closed doors for now.
 
-So only the engine has to be rewritten. `tools/extract.py` does the conversion;
-`game/src/game.c` is the engine (so far: map raster, camera, movement, collision,
-sprite blitting).
+![Through a door: outside, mid-fade, white, and inside](docs/img/door.png)
 
-Geometry is kept identical to the Game Boy, so all the content lines up without
-transformation: a map **block** is a 32×32 px metatile (4×4 tiles of 8×8), the
-player walks in **16×16 px** steps, and collision is stored per 16×16 quadrant.
-`object_event` coordinates are on that same 16 px grid (an object at y=15 on a
-9-block-tall map only fits that way).
+![The pause menu in New Bark Town](docs/img/menu.png)
+
+![The Option screen, with the cursor on Text Speed](docs/img/options.png)
+
+Scripts, map connections (walking between maps), battle and audio are not ported yet —
+see [`TASKS.md`](TASKS.md) for the full inventory and the phased plan.
+
+## Quick start
+
+```sh
+scripts/setup.sh                  # cmake + SDL2 (headless) + Mote's host emulator + ARM gcc
+python3 tools/extract.py          # game data -> game/src/gen/world.h
+scripts/build.sh                  # build the module (.so)
+scripts/build.sh --device         # + the deployable .mote
+scripts/export.sh                 # package dist/PolishedCrystal-<version>.mote + manifest
+scripts/test.sh                   # unit tests + scenarios
+./scripts/shot.sh artifacts/overworld.png 45 "a:2-5,down:20-70"
+MOTE_DT_MS=16 ./scripts/shot.sh artifacts/talk.png 214 "a:2-5,left:20-99,down:110-112,a:125-128"
+./scripts/shot.sh artifacts/menu.png 70 "a:2-5,menu:20-23,down:40-43"
+./scripts/perf.sh 900             # fps / raster_us from mote->perf()
+./scripts/run.sh                  # emulator window (needs a display)
+```
+
+`setup.sh` installs everything under `toolsrc/` because this VM has no root and no
+system SDL2; it is idempotent, so re-run it after the sandbox is restored.
 
 ## Layout
 
 ```
-tools/extract.py      Polished Crystal -> C headers (the content pipeline)
-tools/preview_map.py  reference renderer in Python, to validate the pipeline
-                      independently of the C code (also tests tile/palette order)
-game/src/game.c        the engine: Mote module, banded map raster, movement
-game/src/gen/*.h       generated data (do not edit)
-docs/                  findings, data formats, architecture, dev workflow
-TASKS.md               every system left to port, and the phased plan
-setup.sh               build cmake + SDL2 locally, then Mote's host emulator
-run.sh / shot.sh       run it, or grab a headless screenshot
-vendor/                clones of polishedcrystal, mote, ThumbyOne (gitignored)
+game/src/game.c      Mote glue (vtable, arena, input) — the only file that talks to Mote
+game/src/ow/         overworld: map, camera, player, render (a system complex enough for a folder)
+game/src/text/        dialogue: the game's font, its text bytecode, the textbox
+game/src/ui/          menu windows: the cursor/scroll list and the START menu
+game/src/gfx_sprite.c  sprite expansion and blitting (simple enough to stay one file)
+game/src/gen/        generated data tables (do not edit)
+tools/           extract.py (Polished Crystal -> C), preview_map.py, moteinfo.py
+dist/            packaged .mote + manifest (gitignored: it embeds original content)
+tests/           unit tests per module + readable behaviour scenarios
+scripts/         setup, build, test, shot, run, perf, export
+docs/            findings, data formats, architecture, workflow, conventions
+TASKS.md         every system left to port, and the plan
+vendor/          third-party checkouts (gitignored)
 ```
 
-## Build and run
+## Documentation
 
-The sandbox has no root and no system SDL2, so `setup.sh` installs cmake and a
-**dummy-video/dummy-audio SDL2** under `toolsrc/` — enough for the emulator to
-render frames headlessly. Package installs and build output do not survive
-archiving; the script is idempotent, so just re-run it.
+| Doc | Contents |
+|---|---|
+| [docs/README.md](docs/README.md) | index and the one idea behind the port |
+| [docs/01-target-hardware.md](docs/01-target-hardware.md) | Thumby Color + Mote: real limits, ABI, memory model |
+| [docs/02-pc-anatomy.md](docs/02-pc-anatomy.md) | measured size of every subsystem in Polished Crystal |
+| [docs/03-content-formats.md](docs/03-content-formats.md) | the data formats, and the traps in them |
+| [docs/04-port-architecture.md](docs/04-port-architecture.md) | how the port is built, what is reused, what is rewritten |
+| [docs/05-dev-workflow.md](docs/05-dev-workflow.md) | build loop, headless screenshots, scripted input |
+| [docs/06-findings-log.md](docs/06-findings-log.md) | findings and dead ends, so they are not repeated |
+| [docs/07-conventions.md](docs/07-conventions.md) | **organisation and test rules** (file vs folder, every module tested, scenario format) |
+| [AGENTS.md](AGENTS.md) | operating instructions for an AI agent working in this repo |
 
-```sh
-./setup.sh                                  # cmake + SDL2 + mote_host
-python3 tools/extract.py                    # regenerate game/src/gen/*.h
-LD_LIBRARY_PATH=$PWD/toolsrc/sdl-install/lib ./vendor/mote/tools/mote build game
-./shot.sh artifacts/overworld.png 45 "a:2-5,down:20-60"
-./shot.sh artifacts/left.png 90 "a:2-5,left:20-70"
-```
+## Contributing shape
 
-`MOTE_KEYS` scripts scripted input: `<button>:<from>-<to>` frames, e.g.
-`a:2-5` presses A for frames 2–5 (which is how you get past the Mote launcher),
-then `down:20-60` walks south. `MOTE_SHOT_FRAME` picks the captured frame.
-
-## What the extraction relies on
-
-Verified against the repo and against Elm's Lab / PlayersHouse1F, which render as
-coherent rooms (a good structural check — see `tools/preview_map.py`):
-
-- `.ablk` block ids index the tileset's `_metatiles.bin`, 16 tile ids each,
-  **row-major** (TL,TR,BL,BR).
-- The tileset sheet is VRAM-bank order: tiles 0–127 then 128+ (the 128×88 sheet is
-  exactly 8 rows + 3 rows of 16 tiles, which is the `_metatiles`/`vram0`/`vram1`
-  split the Makefile uses).
-- Tile attribute low 3 bits = BG palette slot (0 gray … 6 roof …), which is what
-  makes pavement gray, grass green and buildings "roof" coloured.
-- `tilecoll BL, TL, BR, TR` is remapped to screen order TL,TR,BL,BR.
-- 2bpp index 0 is the **lightest** shade, while the PNG stores black as 0 — the
-  ramp is inverted during extraction. Skipping that inversion swaps every tile's
-  highlights and shadows.
-
-## Known gaps (in rough order of value)
-
-1. **Text.** No dialog, signs or menus: needs `charmap.asm` + `gfx/font/font.png`
-   (8×8 glyphs) and a textbox renderer. This is the next slice.
-2. **First-person interaction.** `A` facing an NPC should run its script; scripts
-   are compiled bytecode for `engine/overworld/scripting.asm`, so this is the
-   interpreter to port (also unlocks warps/signs/scripted events).
-3. **Warps and connections.** `warp_event`/`connection` rows are parsed by nothing
-   yet, so the town is an island; the map change path doesn't exist.
-4. **NPC animation.** NPCs are drawn static on frame 0; walk frames exist in the
-   data (`SPRITEMOVEDATA_*` drives them) and the player already animates.
-5. **Palettes:** only the *day* set. Night/morning/eve and indoor/water sets are in
-   the same table; time-of-day switching would also need the RTC.
-6. **Audio.** Nothing — `audio/` is macro language for the GB's 4 channels; it has
-   to be re-expressed through `audio_note`/`audio_stream`.
-7. **Battle engine, party, menus, save.** Untouched.
+Code is organised by complexity: a simple piece is a single file, a complex one gets its
+own folder. Every module has a unit test in `tests/unit/`, and behaviour is described by
+plain-text scenarios in `tests/scenarios/` (initial state → steps → final state). Build
+with `scripts/build.sh`, not `mote build` directly. Details:
+[docs/07-conventions.md](docs/07-conventions.md).
 
 ## Legal
 
-Polished Crystal is a fan hack; Pokémon is Nintendo/Game Freak IP. Keep this a
-personal project — don't publish builds with the original content.
+Polished Crystal is a fan hack; Pokémon is Nintendo/Game Freak IP. Keep this a personal
+project — don't publish builds bundling the original content.

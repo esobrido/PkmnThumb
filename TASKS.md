@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **20 hechos · 5 parciales · 66 pendientes** (el conteo incluye las tablas
+Progreso: **21 hechos · 6 parciales · 65 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -17,9 +17,9 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 
 | ID | Sistema | Original | Equivalente en el port | Estado |
 |---|---|---|---|---|
-| SYS-01 | Raster de tiles (LCD) | `home/lcd.asm` | `g_band()` en `game.c` | ✅ |
+| SYS-01 | Raster de tiles (LCD) | `home/lcd.asm` | `ow/render.c`, invocado desde `game.c` | ✅ |
 | SYS-02 | Paletas BG/OAM | `home/palettes.asm` | `bg_pal[]`, expansión a RGB565 | 🟡 sólo BG, sólo grupo `day` |
-| SYS-03 | OAM / sprites | `home/sprites.asm` | blit en `g_overlay()` | 🟡 frame 0, sin prioridad fina |
+| SYS-03 | OAM / sprites | `home/sprites.asm` | `gfx_sprite.c` + overlay en `game.c` | 🟡 frame 0, sin prioridad fina |
 | SYS-04 | Joypad | `home/joypad.asm` | `mote->input()` → `MoteInput` (`held`/`just_pressed`), `mote_pressed()` | ✅ |
 | SYS-05 | Reloj y RTC | `home/time.asm`, `engine/rtc/` | **no hay reloj en la API** (sólo `dt`): acumular tiempo de juego y, si se quiere hora real, leer el RTC del RP2350 desde la capa de OS | ⬜ |
 | SYS-06 | VBlank / IRQ | `home/vblank.asm` | `render_band` + `overlay` | ✅ |
@@ -32,14 +32,14 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 
 | ID | Sistema | Original | Estado |
 |---|---|---|---|
-| OW-01 | Carga de mapa y tileset | `engine/tilesets/map_gfx.asm` | ✅ (1 mapa, extracción previa) |
+| OW-01 | Carga de mapa y tileset | `engine/tilesets/map_gfx.asm` | ✅ (8 mapas, 3 tilesets, carga en caliente) |
 | OW-02 | Movimiento en rejilla | `engine/overworld/player_movement.asm` | ✅ |
 | OW-03 | Colisiones | `engine/overworld/collision.asm` | ✅ (por cuadrante de 16 px) |
 | OW-04 | Cámara / scroll | `engine/overworld/player_step.asm` | ✅ |
-| OW-05 | Objetos/NPCs (posiciones) | `engine/overworld/objects.asm` | 🟡 colocados, estáticos |
+| OW-05 | Objetos/NPCs (posiciones) | `engine/overworld/objects.asm` | ✅ colocados, con cara y giro in place |
 | OW-06 | Movimiento de NPCs, patrones | `engine/overworld/map_objects.asm` | ⬜ |
 | OW-07 | VM de scripts | `engine/overworld/scripting.asm` | ⬜ **clave** |
-| OW-08 | Warps y conexiones entre mapas | `engine/overworld/warp.asm` | ⬜ |
+| OW-08 | Warps y conexiones entre mapas | `engine/overworld/warp.asm` | 🟡 puertas y alfombras de los 8 mapas, con fade de 10+10; faltan conexiones (andar entre mapas) y escaleras a pisos sin extraer |
 | OW-09 | Escenas y coord/bg events | `engine/events/std_scripts.asm` | ⬜ |
 | OW-10 | Cambio de tileset y animación de tiles | `engine/tilesets/` | ⬜ (agua animada) |
 | OW-11 | Día/noche, tiempo | `engine/rtc/` | ⬜ (depende de SYS-05) |
@@ -131,10 +131,13 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 |---|---|---|
 | EN-01 | Toolchain host sin root | ✅ `setup.sh` |
 | EN-02 | Verificación headless (capturas + input guionizado) | ✅ `shot.sh` |
-| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ⬜ no probado aquí |
-| EN-04 | Medición de rendimiento (`perf()`) | ⬜ |
-| EN-05 | Test de regresión visual automatizado | ⬜ |
+| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ✅ toolchain en `setup.sh`, `.mote` de 28 KB |
+| EN-04 | Medición de rendimiento (`perf()`) | ✅ `scripts/perf.sh` + línea `perf` por segundo |
+| EN-05 | Test de regresión visual automatizado (hash de frames) | ⬜ |
 | EN-06 | Empaquetado `.mote` y despliegue al handheld | ⬜ |
+| EN-07 | Harness de tests host: `scripts/test.sh` (unit por módulo + escenarios) | ✅ |
+| EN-08 | Escenarios a nivel emulador (estado inicial/pasos/estado final sobre frames reales) | ⬜ |
+| EN-09 | Wrapper de build (`scripts/build.sh`) que soporta módulos en carpetas | ✅ |
 
 ---
 
@@ -142,6 +145,12 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 
 Orden por **dependencias reales**, no por vistosidad. Cada fase tiene una puerta de
 salida verificable; no se pasa a la siguiente sin cumplirla.
+
+**Regla de entrada para toda tarea:** cada módulo nuevo entra con su fichero (suelto si es
+simple, en carpeta propia si es o puede ser complejo) en `game/src/`, su test unitario en
+`tests/unit/` y, si su comportamiento se puede describir como estado inicial → pasos →
+estado final, su escenario en `tests/scenarios/`. Ver
+[`docs/07-conventions.md`](docs/07-conventions.md).
 
 ### Fase 0 — Fundaciones (✅ casi cerrada)
 
@@ -154,14 +163,18 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 | FND-03 | Raster por bandas con paleta por tile | M | ✅ |
 | FND-04 | Movimiento, colisión, cámara | M | ✅ |
 | FND-05 | Colocación de NPCs desde `object_event` | S | ✅ |
-| FND-06 | Cargar N mapas en tiempo de ejecución (no un header fijo) | M | ⬜ |
-| FND-07 | Animación de NPCs y frames de andar del jugador | S | ⬜ |
-| FND-08 | Prioridad y orden de dibujado (sprites sobre bloques, Y-sort) | S | ⬜ |
-| FND-09 | `perf()` y optimización del raster si hace falta | M | ⬜ |
-| FND-10 | Build de device y ejecución en el handheld | L | ⬜ |
+| FND-06 | Cargar N mapas en tiempo de ejecución (no un header fijo) | M | ✅ `gen/world.h` + `load_map()`, RB/LB |
+| FND-07 | Animación de NPCs y frames de andar del jugador | S | ✅ cara por `object_event`, `SPIN*` in place |
+| FND-08 | Orden de dibujado: sprites sobre bloques, Y-sort | S | ✅ `ow_actor_depth_sort` (prioridad BG-sobre-OAM, ver riesgo) |
+| FND-09 | `perf()` y optimización del raster si hace falta | M | ✅ medido en host (~19 µs); no compensa optimizar aún |
+| FND-10 | Build de device y ejecución en el handheld | L | 🟡 `.mote` de 48 KB, empaquetado por `scripts/export.sh`; falta probarlo en hardware |
 
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
+
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (48 584 B,
+`.bss` 2 972 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
 
@@ -169,15 +182,26 @@ Objetivo: que el juego *hable*. Es lo que convierte una demo en un juego.
 
 | Tarea | Detalle | Tam |
 |---|---|---|
-| TXT-01 | Extraer la fuente 8×8 (`gfx/font/normal.png`) a bitmap C | S |
-| TXT-02 | Parser de las cadenas fuente `.asm` con el charmap → tabla de textos | M |
-| TXT-03 | Render de textbox a 16 tiles de ancho, con paginación y velocidad | M |
-| TXT-04 | Comandos `<PLAYER> <RAM> <NUM> <PAUSE> <SOUND> <WAIT>` | M |
-| TXT-05 | Marco de listas con cursor, scroll y repetición de input | M |
-| TXT-06 | Menú de pausa (Pokémon/Objetos/Jugador/Opciones) | M |
+| TXT-01 | Extraer la fuente 8×8 (`gfx/font/normal.png`) a bitmap C | S | ✅ `gen/font.h` (114 + 6 tiles) |
+| TXT-02 | Parser de las cadenas fuente `.asm` con el charmap → tabla de textos | M | ✅ `gen/text.h`: 13 textos de los 3 mapas, charmap completo |
+| TXT-03 | Render de textbox a 15 tiles de ancho, con paginación y velocidad | M | ✅ `text/box`: reflow, páginas, ▼, A avanza |
+| TXT-04 | Comandos `<PLAYER> <RAM> <NUM> <PAUSE> <SOUND> <WAIT>` | M | 🟡 `<PLAYER>/<RIVAL>`, n-gramas y saltos; faltan `<NUM> <PAUSE> <SOUND> <ASM>` |
+| TXT-05 | Marco de listas con cursor, scroll y repetición de input | M | ✅ `ui/list`: wrap, ventana que sigue al cursor, ↑/↓, caja 10 tiles |
+| TXT-06 | Menú de pausa (Pokémon/Objetos/Jugador/Opciones) | M | 🟡 `ui/menu`: las cinco entradas reales del juego, navegables; Options ya abre su pantalla |
+| TXT-07 | Pantalla de Option: 13 ajustes del original, LEFT/RIGHT cambia el valor | M | ✅ `ui/options` + `gen/options.h`; cableados Text Speed, Running Shoes y Turning Speed |
+| TXT-08 | Ajuste Running Shoes: B corre en el overworld (2 px/frame) | S | ✅ `options_run` + `ow_player` sin caso especial de animación |
+| TXT-09 | Ajuste Turning Speed: girar en el sitio antes de andar (8 frames Slow / 4 Fast) | S | ✅ `options_turn_frames` + giro de dos fases en `ow_player` |
+| TXT-10 | Que el resto de ajustes hagan algo: estéreo, efectos de batalla, tipo de letra, marco | M | ⬜ esperan a audio, batalla, las 8 fuentes y `gfx/frames` |
+| TXT-11 | Empujar contra pared/NPC/borde: animación de andar en el sitio | S | ✅ `bumping` en `ow_player` + acción de paso reusada (sin `step_left`) |
 
 **Puerta F1**: hablar con un NPC y leer su diálogo real, con nombre del jugador
 interpolado, y navegar el menú de pausa.
+
+Estado: la puerta se cruza. `A` con un NPC delante abre su texto real del juego,
+refloweado a 15 columnas, paginado y con `CHRIS` interpolado; MENU abre el menú de pausa
+con las cinco entradas del original (`#dex`, `#mon`, `Bag`, `<PLAYER>`, `Options`), el
+cursor da la vuelta y la ventana scrollea. Options abre la pantalla de ajustes del juego,
+navegable y con estado en memoria; las otras cuatro siguen sin pantalla (fase 3/4).
 
 > Nota de diseño: el original usa textboxes de 20 tiles; aquí caben 16. Hay que elegir
 > entre reflow (recomendado) o marco con scroll horizontal.
@@ -192,6 +216,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL |
 | SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | M |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
+| SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |

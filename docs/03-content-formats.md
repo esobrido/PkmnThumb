@@ -287,6 +287,58 @@ Plan del port: no traducir los scripts a mano ni reescribirlos; extraer el bytec
 escribir un **intérprete nuevo** en C con la misma semántica de comandos. Eso da acceso
 gratis a los 458 mapas con sus eventos, textos, warps y escenas.
 
+### Cómo se ensambla ese bytecode
+
+`macros/scripts/events.asm` es la tabla de comandos: un `const X_command` por comando, en
+el mismo orden que el `jumptable` de `RunScriptCommand`, y debajo el macro que lo emite.
+
+```asm
+	const showtext_command          ; 188 = $bc
+MACRO showtext
+	db showtext_command
+	dw \1 ; text_pointer
+ENDM
+```
+
+Los cuerpos son casi todos `db`/`dw`/`dba`/`dp`/`dr` con `\1`..`\9`, así que el
+extractor **parsea la definición en vez de copiarla** (`script_defs`) y ensambla las llamadas
+del fichero del mapa (`map_scripts`), en dos pasadas porque un `sjump` puede saltar hacia
+adelante. Siete detalles que no son evidentes:
+
+- **`dp` no son dos bytes sueltos.** `macros/data.asm` lo define como
+  `db LOW(especie), HIGH(especie) << MON_EXTSPECIES_F | forma`: el segundo byte es la
+  forma (bits bajos) con los bits altos de la especie desplazados. `setmonval TOGEKISS`
+  (especie `$10f`, forma `PLAIN_FORM` = 1) emite `$0f $21`.
+- **`dr` es una distancia relativa** (16 bits, big-endian) y solo existe en las variantes
+  `sjumpfwd`/`iftruefwd`/`iffalsefwd`/`ifequalfwd`. El extractor **emite la forma absoluta**
+  equivalente: un formato de salto es suficiente en el port y el cálculo de distancias deja
+  de ser una fuente de errores de un byte.
+- **Los punteros a texto se reescriben a índices** de `pc_texts`: el port no tiene
+  direcciones de ROM. Los que apuntan fuera del fichero (datos de movimiento, scripts de
+  otro mapa) quedan en `$FFFF` y se **listan** al extraer, no se rellenan con ceros.
+- **Dentro de una etiqueta de script puede haber datos**: cadenas (`text "..."`) o pasos
+  de movimiento (`step_*`). El ensamblador los salta hasta la siguiente etiqueta `.local`,
+  que vuelve a ser código; sin eso, media docena de scripts se cortan en el primer `text`.
+- **Un macro puede inyectar código como argumento**, y de hecho lo hacen los normales:
+  `giveitem ITEM, iffalse_endtext` emite los tres bytes del objeto y después escribe `\#`,
+  que es "los argumentos que `shift` no ha consumido". Cada uno de ésos se ensambla como
+  un comando más en la misma posición; el fallback del inventario lleno es, literalmente,
+  el siguiente comando del script.
+- **Las tablas de saltos (`scalltable`)** son `dw Script1` / `dw Script2` dentro de una
+  etiqueta de script: se emiten como palabras LE con el offset de cada etiqueta, el mismo
+  formato que un `sjump`.
+- **`if DEF(DEBUG)` también está en el `.asm` del mapa**, envolviendo una escena y trozos
+  de texto. El extractor evalúa `if`/`elif`/`else`/`endc` como una compilación normal
+  (`DEBUG=0`, `FAITHFUL=0`) y descarta la rama que no se ensambla; si un `DEF()` no está
+  declarado, falla en voz alta.
+
+Cobertura actual (`gen/scripts.h`): 224 opcodes, 2 336 B de bytecode y 79 etiquetas en los
+seis mapas del arranque (New Bark Town, Route29, CherrygroveCity, ElmsLab, PlayersHouse1F y
+LyrasHouse1F). `PlayersNeighborsHouse` y `ElmsHouse` no tienen ninguna etiqueta de script.
+Lo que el ensamblador no puede resolver — datos de movimiento en otro fichero, un `dw` de
+otro banco, un entrenador — no se adivina: queda en `$FFFF` y se lista en la salida del
+extractor.
+
 ## Texto
 
 El texto del mapa **ya es bytecode**, no una cadena: `text "..."` emite `$00`
@@ -308,8 +360,8 @@ añade a los caracteres normales:
 
 Como el ensamblador ya resolvió el charmap, el extractor sólo tiene que hacer el
 mapeo inverso (`maximal munch`, para que `#mon` gane a `#`) y emitir los bytes tal
-cual: no hay que imitar el compresor Huffman del ROM, porque los tres mapas de
-arranque suman **13 textos / 6 KB de header**, nada frente a los 16 MB de flash.
+cual: no hay que imitar el compresor Huffman del ROM, porque los seis mapas de
+arranque suman **153 textos / 82 KB de header**, nada frente a los 16 MB de flash.
 
 `text_far`, `text_asm`, `text_ram` y `text_decimal` delegan en otro fichero o en
 código: el extractor los **salta** en vez de emitir media frase, y quedarán para

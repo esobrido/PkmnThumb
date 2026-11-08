@@ -184,6 +184,46 @@ Hablar: `A` con un NPC en la celda a la que miras. El jugador debe estar entre c
 (a mitad de paso no se habla, igual que en el GB); el NPC gira hacia ti y el mundo se
 congela (sin caminar y sin giros de NPC) mientras la caja está abierta.
 
+## Scripts
+
+`script/vm` interpreta el bytecode que emite `tools/extract.py` (`gen/scripts.h`), que es
+el del propio juego ensamblado desde sus macros. No hay traducción de scripts a C: un
+`showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
+hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
+(`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los seis mapas
+con scripts del arranque suman 2 336 B de bytecode y 79 etiquetas.
+
+Tres decisiones de forma:
+
+- **La VM no toca el mundo.** `scr_vm_next` corre hasta que el script necesita algo
+  (imprimir, girar, sonar, esperar) y devuelve un `ScrOut` con la clase de trabajo y sus
+  argumentos; el llamante lo hace y vuelve a llamar. Así la VM se prueba sin pantalla y
+  `game.c` sigue siendo el único que sabe qué es un textbox. Es también lo que hace que un
+  `showtext` no pueda bloquear al intérprete: la espera la decide el que dibuja.
+- **Nada de punteros del juego.** Los saltos son offsets dentro del blob del mapa, los
+  textos son índices de `pc_texts` y los objetos son el número del `object_event`. Una
+  referencia que el extractor no pudo resolver llega como `$FFFF`/`$FF` y se ve en la
+  salida de `tools/extract.py`, en vez de convertirse en un salto a la nada.
+- **La pila tiene 5 huecos**, como `wScriptStackSize`; la sexta llamada da la vuelta al
+  índice en vez de corromper memoria (el original se come el byte alto de la entrada más
+  antigua — el fallo está documentado en `docs/03` del propio juego).
+
+Lo que hay: control de flujo (`sjump`, `scall`, `ifequal`, `iftrue`, `iffalse`, `end`,
+`endcallback`), flags y eventos (`checkflag`, `setflag`, `clearflag`, `checkevent`,
+`setevent`, `clearevent`), texto (`showtext`, `showtextfaceplayer`, `opentext`,
+`closetext`), mundo (`turnobject`, `faceplayer`, `disappear`, `appear`, `playsound`,
+`pause`, `setlasttalked`) y `waitsfx` como no-op.
+
+Lo que falta, y se dice en voz alta: **un opcode que la VM no conoce no se interpreta a
+medias**. Devuelve `SCR_EV_UNSUPPORTED` con su número y la VM se marca muerta, porque sus
+argumentos tienen longitudes distintas por comando y seguir leyendo sería interpretar
+datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `special`,
+`jumpstd` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que las usan.
+
+La VM todavía no está enganchada al juego: hablar con un NPC sigue abriendo el texto que
+extrae `first_text_ref`. El enganche es SCR-03, y necesita antes las escenas y el
+movimiento de NPCs para no dejar media conversación sin hacer.
+
 ## UI: listas y menú de pausa
 
 `ui/list` es la ventana que compartirán el menú de pausa, el equipo, la mochila y las
@@ -280,13 +320,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús) | ver `.mote`: **49 556 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 044 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **64 904 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 052 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 49 556 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 64 904 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

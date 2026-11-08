@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **23 hechos · 6 parciales · 64 pendientes** (el conteo incluye las tablas
+Progreso: **24 hechos · 7 parciales · 62 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -172,8 +172,8 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (49 556 B,
-`.bss` 3 044 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (64 904 B,
+`.bss` 3 052 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
@@ -217,12 +217,13 @@ Objetivo: el mundo deja de ser un decorado.
 
 | Tarea | Detalle | Tam |
 |---|---|---|
-| SCR-01 | Extractor del bytecode de scripts de mapa | L |
-| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL |
+| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 6 mapas con scripts (2 336 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
+| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto, `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
 | SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | M |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
+| SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.10.1) y VM que lo ejecuta (0.10.0) | 🟡 |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |

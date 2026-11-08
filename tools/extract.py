@@ -451,6 +451,62 @@ def encode_text(s, charmap, keys):
     return out
 
 
+# The port is a normal build of the original: `make` defaults to DEBUG=0 and
+# FAITHFUL=0. Map files put a whole scene (and its texts) behind
+# `if DEF(DEBUG)`/`if !DEF(DEBUG)`, so the other branch has to be dropped here.
+BUILD_FLAGS = {"DEBUG": False, "FAITHFUL": False}
+
+
+def _def_cond(expr, where):
+    m = re.match(r"(!?)DEF\((\w+)\)$", expr.strip())
+    if not m:
+        die("%s: unsupported build condition %r" % (where, expr))
+    if m.group(2) not in BUILD_FLAGS:
+        die("%s: unknown build flag %s" % (where, m.group(2)))
+    return BUILD_FLAGS[m.group(2)] != bool(m.group(1))
+
+
+def map_build_text(txt, where):
+    """The lines a release build assembles: `if`/`elif`/`else`/`endc` resolved."""
+    out, stack, active = [], [], True
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        if re.match(r"if\s", code):
+            parent = active
+            active = parent and _def_cond(code[2:], where)
+            stack.append([parent, active])
+            continue
+        if re.match(r"elif\s", code):
+            if not stack:
+                die("%s: `elif` without `if`" % where)
+            parent, taken = stack[-1]
+            active = parent and not taken and _def_cond(code[4:], where)
+            stack[-1][1] = taken or active
+            continue
+        if code == "else":
+            if not stack:
+                die("%s: `else` without `if`" % where)
+            parent, taken = stack[-1]
+            active = parent and not taken
+            stack[-1][1] = True
+            continue
+        if code == "endc":
+            if not stack:
+                die("%s: `endc` without `if`" % where)
+            active = stack.pop()[0]
+            continue
+        if active:
+            out.append(line)
+    if stack:
+        die("%s: unclosed `if`" % where)
+    return "\n".join(out)
+
+
+def map_source(pc, map_name):
+    """A map's .asm with the build-time conditionals already resolved."""
+    return map_build_text(read(os.path.join(pc, "maps", map_name + ".asm")), map_name)
+
+
 def label_blocks(txt):
     """Yield (label, body lines) for every top-level `Label:` in an asm file."""
     lines = txt.splitlines()
@@ -504,7 +560,7 @@ def map_texts(pc, map_name, charmap, keys):
     skipped (they live elsewhere). Order is kept because the generated table is
     read side by side with the .asm by a human.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
     out = {}
     for label, body in label_blocks(txt):
         blk = parse_text_block(body, charmap, keys)
@@ -575,7 +631,7 @@ def map_object_texts(pc, map_name, texts, charmap, keys):
     index of the object_event here matches the order map_objects() emits, which
     is what PcObject.text indexes.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
     blocks = dict(label_blocks(txt))
     out = []
     for line in txt.splitlines():
@@ -956,6 +1012,476 @@ def emit_text(path, texts, pc):
         f.write("};\n\n#endif\n")
 
 
+def script_defs(pc):
+    """Everything the map scripts need that lives outside a map file.
+
+    `opcodes` is the `const X_command` sequence of `macros/scripts/events.asm`
+    (the same order as RunScriptCommand's jump table, so index == opcode),
+    `macros` are those macro bodies, `movement` the names that belong to
+    movement data (not scripts), `specials` the index of each entry of
+    SpecialsPointers, and `consts` every `const`/`DEF ... EQU n` under
+    constants/ plus the map groups. Nothing here is retyped by hand.
+    """
+    txt = read(os.path.join(pc, "macros/scripts/events.asm")).splitlines()
+    opcodes, macros = [], {}
+    n, i = 0, 0
+    while i < len(txt):
+        line = txt[i].strip()
+        m = re.match(r"const_def\s*(\d+)?", line)
+        if m:
+            n = int(m.group(1) or 0)
+            i += 1
+            continue
+        m = re.match(r"const\s+(\w+)", line)
+        if m:
+            if m.group(1) != "_skip":
+                opcodes.append((m.group(1), n))
+            n += 1
+            i += 1
+            continue
+        m = re.match(r"MACRO\s+(\w+)", line)
+        if m:
+            body = []
+            i += 1
+            while i < len(txt) and txt[i].strip() != "ENDM":
+                body.append(txt[i])
+                i += 1
+            i += 1
+            macros[m.group(1)] = body
+            continue
+        i += 1
+    if len(opcodes) < 200:
+        die("events.asm: only %d script opcodes found" % len(opcodes))
+
+    movement = set()
+    for line in read(os.path.join(pc, "macros/scripts/movement.asm")).splitlines():
+        m = re.match(r"MACRO\s+(\w+)", line.strip())
+        if m:
+            movement.add(m.group(1))
+
+    # Text macros end a script block: the strings sit right after `end` in the
+    # same label, and map_texts has already extracted them.
+    text_macros = set()
+    for line in read(os.path.join(pc, "macros/scripts/text.asm")).splitlines():
+        m = re.match(r"MACRO\s+(\w+)", line.strip())
+        if m:
+            text_macros.add(m.group(1))
+
+    specials = {}
+    for line in read(os.path.join(pc, "data/events/special_pointers.asm")).splitlines():
+        m = re.match(r"\s*add_special\s+(\w+)", line)
+        if m:
+            specials[m.group(1)] = len(specials)
+
+    consts = {name: code for name, code in opcodes}
+    for path in sorted(glob.glob(os.path.join(pc, "constants", "*.asm"))):
+        n = 0
+        for line in read(path).splitlines():
+            s = line.split(";")[0].strip()
+            m = re.match(r"const_def\s*(-?\d+)?$", s)
+            if m:
+                n = int(m.group(1) or 0)
+                continue
+            m = re.match(r"const\s+(\w+)\s*(?:=\s*(\d+))?$", s)
+            if m:
+                if m.group(1) != "_skip":
+                    consts.setdefault(m.group(1),
+                                      int(m.group(2)) if m.group(2) else n)
+                n += 1
+                continue
+            m = re.match(r"const_skip\s*(\d+)?$", s)
+            if m:
+                n += int(m.group(1) or 1)
+                continue
+            m = re.match(r"(?:DEF\s+)?(\w+)\s+EQU\s+(-?\d+|\$[0-9a-fA-F]+)$", s)
+            if m:
+                v = m.group(2)
+                consts.setdefault(m.group(1), int(v[1:], 16) if v[0] == "$" else int(v))
+    if len(consts) < 1000:
+        die("constants: only %d values found" % len(consts))
+
+    group, order = -1, 0
+    for line in read(os.path.join(pc, "constants/map_constants.asm")).splitlines():
+        s = line.split(";")[0].strip()
+        if re.match(r"newgroup$", s):
+            group += 1
+            order = 0
+            continue
+        m = re.match(r"map_const\s+(\w+)", s)
+        if m:
+            consts["GROUP_" + m.group(1)] = group
+            consts["MAP_" + m.group(1)] = order
+            order += 1
+    return {"opcodes": opcodes, "macros": macros, "movement": movement,
+            "text": text_macros, "specials": specials, "consts": consts}
+
+
+def asm_label_blocks(txt):
+    """(label, lines) for `Name:` and bare-`Name` labels (RGBDS allows both)."""
+    cur, body = None, []
+    for line in txt:
+        m = re.match(r"^(\w+):\s*(?:;.*)?$", line.rstrip())
+        if not m:
+            m = re.match(r"^(\w+)$", line.rstrip())
+        if m:
+            if cur is not None:
+                yield cur, body
+            cur, body = m.group(1), []
+            continue
+        if cur is not None:
+            body.append(line)
+    if cur is not None:
+        yield cur, body
+
+
+class Unsupported(Exception):
+    """A macro this extractor cannot assemble yet (nested code fragments)."""
+
+
+def _compare(op, a, b):
+    return {"==": a == b, "!=": a != b, ">=": a >= b,
+            "<=": a <= b, ">": a > b, "<": a < b}[op]
+
+
+def script_sizes(defs, name, args):
+    """Bytes one script macro emits, as [(value | symbol, width)].
+
+    The relative forms (`sjumpfwd`, `iftruefwd`, `iffalsefwd`, `ifequalfwd`) are
+    rewritten to their absolute twins: they exist only to save bytes, and a
+    distance measured from the operand is one more thing to get wrong.
+    """
+    if name.endswith("fwd") and name[:-3] in defs["macros"]:
+        name = name[:-3]
+    out = []
+    # `\#` is "the arguments `shift` has not eaten yet", so a macro that takes
+    # an item plus a fail-safe handler (`giveitem POTION, .full`) is a call to a
+    # byte-emitting twin followed by the remaining arguments as script code.
+    args = list(args)
+    first = 0
+    def arg(mo):
+        i = first + int(mo.group(1)) - 1
+        if i >= len(args):
+            raise Unsupported("%s: argument %d missing" % (name, i + 1))
+        return args[i]
+
+    def cond(expr):
+        """`_NARG == 2`, `\1 == 0`: both sides are numbers or `_NARG`."""
+        expr = re.sub(r"\\(\d)", arg, expr).strip()
+        m = re.match(r"(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$", expr)
+        if not m:
+            raise Unsupported("%s: cannot evaluate %r" % (name, expr))
+
+        def val(s):
+            s = s.strip()
+            return len(args) - first if s == "_NARG" else _number(s, defs)
+        return _compare(m.group(2), val(m.group(1)), val(m.group(3)))
+
+    # `if` guards matter because both branches are emitted otherwise, and one
+    # of them then references an argument that is not there. `elif` is real in
+    # `pokepic`/`cry` (`if \1 == 0` ... `elif _NARG == 2`).
+    active, stack = True, []
+    for line in defs["macros"][name]:
+        code = line.split(";")[0].strip()
+        if (not code or code.startswith("assert")
+                or code.startswith("rept") or code.startswith("endr")):
+            continue
+        m = re.match(r"shift\s*(\d+)?$", code)
+        if m:
+            first = min(first + int(m.group(1) or 1), len(args))
+            continue
+        m = re.match(r"if\s+(.*)$", code)
+        if m:
+            parent = active
+            active = parent and cond(m.group(1))
+            stack.append({"parent": parent, "taken": active})
+            continue
+        m = re.match(r"elif\s+(.*)$", code)
+        if m:
+            if not stack:
+                die("script macro %s: `elif` without `if`" % name)
+            top = stack[-1]
+            active = top["parent"] and not top["taken"] and cond(m.group(1))
+            top["taken"] = top["taken"] or active
+            continue
+        if re.match(r"else$", code):
+            if not stack:
+                die("script macro %s: `else` without `if`" % name)
+            top = stack[-1]
+            active = top["parent"] and not top["taken"]
+            top["taken"] = True
+            continue
+        if re.match(r"endc$", code):
+            if not stack:
+                die("script macro %s: `endc` without `if`" % name)
+            active = stack.pop()["parent"]
+            continue
+        if not active:
+            continue
+
+        if code == "\\#":
+            # The rest of the arguments *are* script code, one command each.
+            for frag in args[first:]:
+                head = frag.split(None, 1)[0]
+                if head not in defs["macros"]:
+                    raise Unsupported("%s: %r is not a script command" % (name, frag))
+                rest = frag.split(None, 1)[1] if len(frag.split(None, 1)) > 1 else ""
+                out += script_sizes(defs, head, split_args(rest))
+            continue
+
+        m = re.match(r"(db|dp|dw|dba|dr|map_id)\s+(.*)$", code)
+        if not m:
+            # a nested macro call (`giveitem_unsafe` -> `giveitems_unsafe`)
+            head = code.split(None, 1)[0]
+            if head in defs["macros"]:
+                inner = code.split(None, 1)[1] if len(code.split(None, 1)) > 1 else ""
+                out += script_sizes(defs, head,
+                                    split_args(re.sub(r"\\(\d)", arg, inner)))
+                continue
+            raise Unsupported("%s: cannot assemble %r" % (name, code))
+        kind, expr = m.group(1), m.group(2).strip()
+        expr = re.sub(r"\\(\d)", arg, expr.replace("\\#", ", ".join(args[first:])))
+        if "\\" in expr:
+            raise Unsupported("%s: cannot expand %r" % (name, expr))
+        if kind == "map_id":
+            out += [("GROUP_" + expr, 1), ("MAP_" + expr, 1)]
+            continue
+        m = re.match(r"^\((\w+)Special\s*-\s*SpecialsPointers\)\s*/\s*3$", expr)
+        if m:
+            if m.group(1) not in defs["specials"]:
+                die("special %s: not in SpecialsPointers" % m.group(1))
+            out.append((defs["specials"][m.group(1)], 1))
+            continue
+        if kind == "dp":
+            # macros/data.asm: `dp species, form` is LOW(species) and
+            # HIGH(species) << MON_EXTSPECIES_F | form, not two loose bytes.
+            vals = split_args(expr)
+            if not 1 <= len(vals) <= 2:
+                die("%s.dp: %d arguments" % (name, len(vals)))
+            species = _number(vals[0], defs)
+            form = _number(vals[1], defs) if len(vals) == 2 else \
+                defs["consts"]["PLAIN_FORM"]
+            flag = defs["consts"]["MON_EXTSPECIES_F"]
+            high = ((species >> 8) << flag) | form
+            out.append((species & 0xff, 1))
+            out.append((high & 0xff, 1))
+            continue
+        width = {"db": 1, "dw": 2, "dba": 3, "dr": 2}[kind]
+        if re.fullmatch(r"-?\d+", expr):
+            out.append((int(expr), width))
+        elif expr in defs["consts"]:
+            out.append((defs["consts"][expr], width))
+        else:
+            n = const_expr(expr, defs["consts"])
+            out.append((n if n is not None else expr, width))
+    return out
+
+
+def _number(sym, defs):
+    """A literal, a known constant or simple arithmetic; dies if it is neither."""
+    if re.fullmatch(r"-?\d+", sym):
+        return int(sym)
+    if sym in defs["consts"]:
+        return defs["consts"][sym]
+    n = const_expr(sym, defs["consts"])
+    if n is None:
+        die("script data: cannot evaluate %r" % sym)
+    return n
+
+
+def const_expr(expr, consts):
+    """`(1 << MORN) | (1 << DAY)` -> a number, or None if it is not arithmetic.
+
+    Only shifts, ors and the constants themselves are allowed: if the string is
+    a symbol or anything else, the caller keeps it as a name.
+    """
+    if not re.fullmatch(r"[-\w\s()<>|+*/&]+$", expr):
+        return None
+    names = set(re.findall(r"[A-Za-z_]\w*", expr))
+    if not names or not names <= set(consts):
+        return None
+    try:
+        return int(eval(expr.replace("$", "0x"),  # noqa: S307 - digits and consts only
+                        {"__builtins__": {}},
+                        {n: consts[n] for n in names}))
+    except Exception:
+        return None
+
+
+def map_scripts(pc, map_name, defs, text_index):
+    """Assemble every script label of a map into one blob.
+
+    Each entry point gets its own region, so a script can be run from its
+    offset without knowing the map's layout. In-file jumps resolve to offsets
+    in the blob; a pointer to a text becomes an index into `pc_texts`, because
+    the port has no ROM addresses. Anything else (movement data, another map's
+    script) becomes $FFFF and is reported, not silently zeroed.
+    """
+    blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
+    header = next((body for label, body in blocks if label.endswith("_MapScriptHeader")), [])
+
+    objects, scenes, n = {}, {}, 0
+    for line in header:
+        m = re.match(r"\s*const\s+(\w+)", line)
+        if m:
+            n += 1
+            objects[m.group(1)] = n
+            continue
+        m = re.match(r"\s*scene_const\s+(\w+)", line)
+        if m:
+            scenes[m.group(1)] = len(scenes)
+    consts = dict(defs["consts"])
+    consts.update(scenes)
+
+    def is_script(body):
+        for line in body:
+            s = line.split(";")[0].strip()
+            if not s:
+                continue
+            name = s.split()[0]
+            return name in defs["macros"] and name not in defs["movement"]
+        return False
+
+    scripts = [(label, body) for label, body in blocks if is_script(body)]
+    if not scripts:
+        raise Unsupported("no script labels in the map file")
+
+    def assemble(label, body, labels, locals_rel):
+        """One script block.
+
+        `locals_rel` maps `.label` -> offset inside the block. Two passes are
+        unavoidable: a script jumps forward over its own `.foo` labels, so a
+        single pass would see them as unknown.
+        """
+        out, extern = [], set()
+
+        def value(sym):
+            if sym.startswith("."):
+                key = label + sym
+                if key in locals_rel:
+                    return labels.get(label, 0) + locals_rel[key]
+                extern.add(sym)
+                return None
+            if sym in labels:
+                return labels[sym]
+            if sym in text_index:
+                return text_index[sym]
+            if sym in objects:
+                return objects[sym]
+            if sym in consts:
+                return consts[sym]
+            extern.add(sym)
+            return None
+
+        skipping = False
+        for line in body:
+            s = line.split(";")[0].strip()
+            if not s:
+                continue
+            m = re.match(r"^(\.\w+):?$", s)
+            if m:
+                if not skipping:
+                    locals_rel[label + m.group(1).rstrip(":")] = len(out)
+                else:
+                    skipping = False
+                    locals_rel[label + m.group(1).rstrip(":")] = len(out)
+                continue
+            if skipping:
+                continue
+            parts = s.split(None, 1)
+            if parts[0] in defs["text"] or parts[0] in defs["movement"]:
+                # Data, not code: text strings or movement steps can sit inside a
+                # script label, and both have their own extractor. Skip to the
+                # next label, which is a script again.
+                skipping = True
+                continue
+            m = re.match(r"(db|dw)\s+(.*)$", s)
+            if m:
+                # A `scalltable` jump table: `dw Script1`, `dw Script2` in file
+                # order. Its entries are script offsets, so they resolve the
+                # same way a `sjump` target does.
+                width = 1 if m.group(1) == "db" else 2
+                for sym in split_args(m.group(2)):
+                    v = value(sym.strip())
+                    if v is None:
+                        out += [0xff] * width
+                        continue
+                    out += [v & 0xff, (v >> 8) & 0xff][:width]
+                continue
+            if parts[0] not in defs["macros"]:
+                die("%s.%s: %r is not a script macro" % (map_name, label, s))
+            args = split_args(parts[1]) if len(parts) > 1 else []
+            for val, width in script_sizes(defs, parts[0], args):
+                if not isinstance(val, str):
+                    out += [val & 0xff, (val >> 8) & 0xff][:width]
+                    continue
+                v = value(val)
+                if v is None:
+                    out += [0xff] * width
+                    continue
+                if width == 1:
+                    out.append(v & 0xff)
+                else:
+                    out += [v & 0xff, (v >> 8) & 0xff][:width]
+        return out, extern
+
+    sizes, locals_rel, off = {}, {}, 0
+    for label, body in scripts:
+        locals_rel[label] = {}
+        try:
+            sizes[label] = len(assemble(label, body, {}, locals_rel[label])[0])
+        except Unsupported as exc:
+            raise Unsupported("%s: %s" % (label, exc))
+    labels = {}
+    for label, _ in scripts:
+        labels[label] = off
+        off += sizes[label]
+
+    blob, extern = [], set()
+    for label, body in scripts:
+        data, ext = assemble(label, body, labels, locals_rel[label])
+        if len(data) != sizes[label]:
+            die("%s.%s: size changed between passes (%d != %d)"
+                % (map_name, label, len(data), sizes[label]))
+        blob += data
+        extern |= ext
+    return {"labels": labels, "bytes": bytes(blob), "extern": sorted(extern),
+            "locals": sum(len(v) for v in locals_rel.values())}
+
+
+def emit_scripts(path, per_map, defs, text_index):
+    """One header with the opcode names, the blobs and the label offsets."""
+    with open(path, "w") as f:
+        f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
+        f.write("#ifndef PC_GEN_SCRIPTS_H\n#define PC_GEN_SCRIPTS_H\n#include <stdint.h>\n\n")
+        f.write("/* opcodes: the `const *_command` order of macros/scripts/events.asm */\n")
+        for name, code in defs["opcodes"]:
+            f.write("#define PCS_%-26s 0x%02x\n" % (name[:-len("_command")].upper(), code))
+        f.write("\n/* text pointers inside a script are indexes into pc_texts, not addresses */\n")
+        f.write("#define PCS_TEXT_INDEX_COUNT %d\n" % len(text_index))
+        f.write("#define PCS_EXTERN 0xffff\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            f.write("static const uint8_t scr%d_%s[%d] = {\n" % (i, map_name, len(data["bytes"])))
+            for j in range(0, len(data["bytes"]), 16):
+                f.write("\t" + ",".join("0x%02x" % b for b in data["bytes"][j:j + 16]) + ",\n")
+            f.write("};\n\n")
+        f.write("typedef struct { const char *label; uint16_t offset; } PcScriptLabel;\n")
+        f.write("typedef struct { const char *map; const uint8_t *bytes; uint16_t len; "
+                "const PcScriptLabel *labels; uint16_t label_count; } PcScriptMap;\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            f.write("static const PcScriptLabel scr%d_labels[%d] = {\n"
+                    % (i, len(data["labels"])))
+            for label, off in data["labels"].items():
+                f.write('\t{ "%s", %d },\n' % (label, off))
+            f.write("};\n\n")
+        f.write("#define PC_SCRIPT_MAP_COUNT %d\n" % len(per_map))
+        f.write("static const PcScriptMap pc_script_maps[PC_SCRIPT_MAP_COUNT] = {\n")
+        for i, (map_name, data) in enumerate(per_map):
+            f.write('\t{ "%s", scr%d_%s, %d, scr%d_labels, %d },\n'
+                    % (map_name, i, map_name, len(data["bytes"]), i,
+                       len(data["labels"])))
+        f.write("};\n\n#endif\n")
+
+
 def emit_font(path, primary, common):
     """The 8x8 font as 1bpp rows, 1 = ink, bit 7 = leftmost pixel.
 
@@ -1202,6 +1728,12 @@ def main():
                 % (map_name, max(blocks), len(tilesets[ti]["mts"])))
 
         texts = map_texts(pc, map_name, charmap, ckeys)
+        # Every text of the map goes in the table, not only the ones an object
+        # points at: scripts reach for the rest with `showtext`.
+        for label, data in texts.items():
+            if label not in text_index:
+                text_index[label] = len(texts_all)
+                texts_all.append((label, data))
         obj_labels = map_object_texts(pc, map_name, texts, charmap, ckeys)
 
         objects = []
@@ -1276,6 +1808,29 @@ def main():
     emit_text(tpath, texts_all, pc)
     print("texts     %d in %s (%d KB)"
           % (len(texts_all), tpath, os.path.getsize(tpath) // 1024))
+
+    # Map scripts: the original's own script bytecode, assembled from the .asm
+    # macro calls (never hand-written byte tables).
+    defs = script_defs(pc)
+    per_map, bytes_total, extern_all = [], 0, set()
+    for map_name in wanted:
+        try:
+            data = map_scripts(pc, map_name, defs, text_index)
+        except Unsupported as exc:
+            print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
+            continue
+        per_map.append((map_name, data))
+        bytes_total += len(data["bytes"])
+        extern_all |= set(data["extern"])
+        print("scripts   %-22s %2d labels, %4d B%s"
+              % (map_name, len(data["labels"]), len(data["bytes"]),
+                 "" if not data["extern"] else
+                 ", extern: " + ", ".join(data["extern"])))
+    spath = os.path.join(out, "scripts.h")
+    emit_scripts(spath, per_map, defs, text_index)
+    print("scriptsvm %d opcodes, %d B of bytecode in %s (%d KB)"
+          % (len(defs["opcodes"]), bytes_total, spath,
+             os.path.getsize(spath) // 1024))
 
     fpath = os.path.join(out, "font.h")
     emit_font(fpath, font_tiles(pc, "normal", 114), font_tiles(pc, "common", 6))

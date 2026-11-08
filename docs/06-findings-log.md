@@ -288,6 +288,61 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   flujo de texto (`jp hl`); el port lo trata como fin de cadena, que es la otra rama del
   original, antes que imprimir instrucciones de máquina como letras.
 
+## Trampas nuevas (fase 2: ensamblar los scripts)
+
+- **`const_def -1` existe y el signo importa.** El bloque de direcciones
+  (`STANDING $-1$, DOWN $0$, UP $1$, LEFT $2$, RIGHT $3$) empieza en −1; un parser que
+  solo acepta positivos arranca el contador donde lo dejó el bloque anterior y `LEFT`
+  sale **11** en vez de 2. No falla nada: el NPC gira a un valor que no es una dirección.
+  Se vio porque un test comprobaba el argumento de `turnobject`.
+- **Un mismo nombre de constante puede vivir en dos espacios.** `LEFT` es dirección de
+  caminar (2) y `FACE_LEFT` es dirección de cara (11); mezclarlos compila y no gira nada.
+  El diccionario de constantes se queda con la primera definición, así que el orden de
+  los ficheros de `constants/` es parte del contrato.
+- **`dp` no son dos bytes sueltos.** `macros/data.asm` lo define como
+  `db LOW(especie), HIGH(especie) << MON_EXTSPECIES_F | forma`: el segundo byte lleva la
+  **forma** en los bits bajos, no el byte alto crudo. `setmonval TOGEKISS` (especie
+  `$10f`) emite `$0f $21`, y leerlo como "par de bytes" daría `$0f $01`, que es la especie
+  271 con la forma equivocada. La constante se lee del propio fichero fuente, no se
+  adivina.
+- **`dr` es una distancia relativa y big-endian.** Solo aparece en las variantes `*fwd`
+  de los saltos, que existen para ahorrar bytes. El port no las necesita: el extractor
+  emite el salto absoluto equivalente, y así hay un solo formato de salto que pueda estar
+  mal.
+- **Dentro de una etiqueta de script hay datos, no solo código.** Un bloque puede seguir
+  con `text "..."` o con pasos de movimiento después de su `end`, y más tarde tener otra
+  etiqueta `.local` que sí es código (`.FirstTimeBanking:` detrás de un texto en línea).
+  Cortar el bloque en el primer `text` pierde esa segunda mitad; hay que saltar los datos
+  hasta la siguiente etiqueta.
+- **Los `.local` se referencian hacia adelante.** `iftruefwd .Totodile` precede a
+  `.Totodile:` en el mismo bloque, así que una sola pasada marca como externo lo que es
+  local. Hacen falta dos: una para los tamaños y las posiciones de las etiquetas, otra
+  para los valores.
+- **Algunos macros inyectan código como argumento** (`giveitem ITEM, iffalse_endtext`):
+  `giveitem` llama a `giveitem_unsafe \1` (los tres bytes del objeto) y después escribe
+  `\#`, que en RGBDS no es "lo que sobra en la línea" sino **los argumentos que `shift`
+  no ha consumido**. Cada uno de ellos se ensambla como un comando más, en la misma
+  posición. Es lo que hace que la tienda de objetos y su fallback (`iffalse_endtext`)
+  sean dos comandos seguidos, no un argumento del `giveitem`.
+- **`if _NARG == n` dentro de un macro no se puede ignorar.** `givepoke`/`loadwildmon`
+  emiten distinto número de bytes según cuántos argumentos reciben; saltarse la condición
+  emite las dos ramas y una de ellas referencia un `\3` que no existe.
+- **`elif` también lleva argumentos.** `pokepic` y `cry` hacen `if \1 == 0` …
+  `elif _NARG == 2` … `else`, y la condición se evalúa **después** de sustituir `\1`:
+  comparar el texto `\1` con 0 no da nunca. Un `if` mal evaluado no falla: elige la rama
+  equivocada y emite la forma equivocada.
+- **El `.asm` del mapa también está lleno de condicionales de compilación.**
+  `if DEF(DEBUG)` envuelve una escena entera de Elm y trozos de sus textos (unas 30 líneas
+  sólo para el build de debug). Ignorarlos no rompe el ensamblado: mete texto de debug en
+  `pc_texts` y desplaza los índices de todos los textos siguientes. El port es una
+  compilación normal (`DEBUG=0`, `FAITHFUL=0`), así que el extractor resuelve
+  `if`/`elif`/`else`/`endc` y tira la otra rama.
+- **Hay tablas de saltos dentro de un script**: `scalltable .Tabla` seguido de
+  `dw Script1` / `dw Script2`. Son datos con forma de código: si se saltan "hasta la
+  siguiente etiqueta" el `scalltable` acaba apuntando a otra cosa, y si se emiten como
+  texto, el comando lee basura. Se emiten como palabras LE con el offset de la etiqueta,
+  igual que un `sjump`.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,

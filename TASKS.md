@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **21 hechos · 6 parciales · 65 pendientes** (el conteo incluye las tablas
+Progreso: **23 hechos · 6 parciales · 64 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -131,7 +131,7 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 |---|---|---|
 | EN-01 | Toolchain host sin root | ✅ `scripts/setup.sh` |
 | EN-02 | Verificación headless (capturas + input guionizado) | ✅ `scripts/shot.sh` |
-| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ✅ toolchain en `scripts/setup.sh`, `.mote` de 48 KB |
+| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ✅ toolchain en `scripts/setup.sh`, `.mote` de 49 KB |
 | EN-04 | Medición de rendimiento (`perf()`) | ✅ `scripts/perf.sh` + línea `perf` por segundo |
 | EN-05 | Test de regresión visual automatizado (hash de frames) | ⬜ |
 | EN-06 | Empaquetado `.mote` y despliegue al handheld | ⬜ |
@@ -167,13 +167,13 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 | FND-07 | Animación de NPCs y frames de andar del jugador | S | ✅ cara por `object_event`, `SPIN*` in place |
 | FND-08 | Orden de dibujado: sprites sobre bloques, Y-sort | S | ✅ `ow_actor_depth_sort` (prioridad BG-sobre-OAM, ver riesgo) |
 | FND-09 | `perf()` y optimización del raster si hace falta | M | ✅ medido en host (20 µs); no compensa optimizar aún |
-| FND-10 | Build de device y ejecución en el handheld | L | 🟡 `.mote` de 48 KB, empaquetado por `scripts/export.sh`; falta probarlo en hardware |
+| FND-10 | Build de device y ejecución en el handheld | L | 🟡 `.mote` de 49 KB, empaquetado por `scripts/export.sh`; falta probarlo en hardware |
 
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (48 584 B,
-`.bss` 2 972 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (49 556 B,
+`.bss` 3 044 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
@@ -183,25 +183,30 @@ Objetivo: que el juego *hable*. Es lo que convierte una demo en un juego.
 | Tarea | Detalle | Tam |
 |---|---|---|
 | TXT-01 | Extraer la fuente 8×8 (`gfx/font/normal.png`) a bitmap C | S | ✅ `gen/font.h` (114 + 6 tiles) |
-| TXT-02 | Parser de las cadenas fuente `.asm` con el charmap → tabla de textos | M | ✅ `gen/text.h`: 13 textos de los 3 mapas, charmap completo |
+| TXT-02 | Parser de las cadenas fuente `.asm` con el charmap → tabla de textos | M | ✅ `gen/text.h`: 23 textos de los 8 mapas, charmap completo y la tabla de comandos leída de `charmap.asm` |
 | TXT-03 | Render de textbox a 15 tiles de ancho, con paginación y velocidad | M | ✅ `text/box`: reflow, páginas, ▼, A avanza |
-| TXT-04 | Comandos `<PLAYER> <RAM> <NUM> <PAUSE> <SOUND> <WAIT>` | M | 🟡 `<PLAYER>/<RIVAL>`, n-gramas y saltos; faltan `<NUM> <PAUSE> <SOUND> <ASM>` |
+| TXT-04 | Comandos `<PLAYER> <RAM> <NUM> <PAUSE> <SOUND> <WAIT>` | M | ✅ el juego de comandos completo de `TextCommands` (24 bytes): `<WAIT>` para y A sigue en la misma página, `<PAUSE>` 30 frames, `<NUM>` con 3 argumentos y tabla dirección→valor, y `<SOUND>/<RAM>/<FAR>/<DAY>/<ASM>` consumidos con su razón escrita; tabla emitida desde `charmap.asm` |
 | TXT-05 | Marco de listas con cursor, scroll y repetición de input | M | ✅ `ui/list`: wrap, ventana que sigue al cursor, ↑/↓, caja 10 tiles |
-| TXT-06 | Menú de pausa (Pokémon/Objetos/Jugador/Opciones) | M | 🟡 `ui/menu`: las cinco entradas reales del juego, navegables; Options ya abre su pantalla |
+| TXT-06 | Menú de pausa (Pokémon/Objetos/Jugador/Opciones) | M | ✅ `ui/menu`: las cinco entradas reales, cursor con vuelta y ventana con scroll; Options abre su pantalla. Las otras cuatro son pantallas de datos: van a GAM-07 |
 | TXT-07 | Pantalla de Option: 13 ajustes del original, LEFT/RIGHT cambia el valor | M | ✅ `ui/options` + `gen/options.h`; cableados Text Speed, Running Shoes y Turning Speed |
 | TXT-08 | Ajuste Running Shoes: B corre en el overworld (2 px/frame) | S | ✅ `options_run` + `ow_player` sin caso especial de animación |
 | TXT-09 | Ajuste Turning Speed: girar en el sitio antes de andar (8 frames Slow / 4 Fast) | S | ✅ `options_turn_frames` + giro de dos fases en `ow_player` |
-| TXT-10 | Que el resto de ajustes hagan algo: estéreo, efectos de batalla, tipo de letra, marco | M | ⬜ esperan a audio, batalla, las 8 fuentes y `gfx/frames` |
+| TXT-10 | Que el resto de ajustes hagan algo: estéreo, efectos de batalla, tipo de letra, marco | M | ⛔ imposible hasta que existan audio (SYS-10), batalla (fase 4), las 8 fuentes y `gfx/frames`; los ajustes ya se guardan y se leen |
 | TXT-11 | Empujar contra pared/NPC/borde: animación de andar en el sitio | S | ✅ `bumping` en `ow_player` + acción de paso reusada (sin `step_left`) |
 
 **Puerta F1**: hablar con un NPC y leer su diálogo real, con nombre del jugador
 interpolado, y navegar el menú de pausa.
 
-Estado: la puerta se cruza. `A` con un NPC delante abre su texto real del juego,
-refloweado a 15 columnas, paginado y con `CHRIS` interpolado; MENU abre el menú de pausa
-con las cinco entradas del original (`#dex`, `#mon`, `Bag`, `<PLAYER>`, `Options`), el
-cursor da la vuelta y la ventana scrollea. Options abre la pantalla de ajustes del juego,
-navegable y con estado en memoria; las otras cuatro siguen sin pantalla (fase 3/4).
+Estado: **fase cerrada**. `A` con un NPC delante abre su texto real del juego, refloweado
+a 15 columnas, paginado y con `CHRIS` interpolado; el impresor entiende **todos** los
+comandos de texto del original, incluidos los que aún no usa ningún texto extraído.
+MENU abre el menú de pausa con las cinco entradas del original (`#dex`, `#mon`, `Bag`,
+`<PLAYER>`, `Options`), el cursor da la vuelta y la ventana scrollea. Options abre la
+pantalla de ajustes, navegable y con estado en memoria.
+
+Lo que queda fuera de la fase no es trabajo de texto: las otras cuatro pantallas del menú
+son Pokédex, equipo, mochila y tarjeta, y ninguna tiene datos que mostrar hasta GAM-02,
+GAM-04 y GAM-06 (GAM-07 las cubre). TXT-10 depende de audio, batalla y arte, no de texto.
 
 > Nota de diseño: el original usa textboxes de 20 tiles; aquí caben 16. Hay que elegir
 > entre reflow (recomendado) o marco con scroll horizontal.
@@ -217,6 +222,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | M |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
+| SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |
@@ -235,6 +241,7 @@ con Elm y que su script se ejecute del bytecode original.
 | GAM-04 | Mochila e items | M |
 | GAM-05 | Guardado/guardado completo en `save()` | M |
 | GAM-06 | Pokédex | M |
+| GAM-07 | Pantallas del menú de pausa: Pokédex, equipo, mochila y tarjeta de entrenador (las cuatro entradas que hoy sólo cierran el menú) | M |
 
 ### Fase 4 — Batalla
 

@@ -123,6 +123,11 @@ launcher. `MOTE_DT_MS` gives a fixed timestep.
   so one emulator frame is ~0.12 px and "16 frames per cell" silently becomes 2 cells.
 - Text bytes are the game's charmap, **not ASCII** ('Y' is 0x98; 0x59 is `<PARA>`). Never
   put a C character literal into a text stream.
+- The text commands (`$00`-`$09`, `$52`-`$5d`) carry **arguments** (`<NUM>` 3 bytes,
+  `<SOUND>` 1, `<FAR>` 3), so a printer that does not know one prints the command *and its
+  arguments* as glyphs. `text/box` consumes all of them; `<WAIT>` is an input gate that
+  resumes on the same page and `<PAUSE>` is a 30 frame delay, not a page break. The codes
+  are parsed out of `constants/charmap.asm`, never retyped.
 - NPCs are not in the tileset collision. `OwMap.cells` is the second layer that makes
   them block; without it the player walks through an NPC and can never talk to it.
 - Menu labels are inline in `engine/menus/start_menu.asm` as `db "#dex@"` — the `@`

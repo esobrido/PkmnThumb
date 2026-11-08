@@ -3,15 +3,57 @@
 #define PC_GEN_TEXT_H
 #include <stdint.h>
 
-/* text control codes, as the game defines them */
-#define PCT_START  0x00
-#define PCT_DONE   0x52
-#define PCT_PROMPT 0x54
-#define PCT_LNBRK  0x55
-#define PCT_NEXT   0x56
-#define PCT_LINE   0x57
-#define PCT_CONT   0x58
-#define PCT_PARA   0x59
+/* text control codes, straight from constants/charmap.asm */
+#define PCT_START   0x00
+#define PCT_RAM     0x01
+#define PCT_WAIT    0x02
+#define PCT_ASM     0x03
+#define PCT_NUM     0x04
+#define PCT_PAUSE   0x05
+#define PCT_SOUND   0x06
+#define PCT_DAY     0x07
+#define PCT_FAR     0x08
+#define PCT_PLURAL  0x09
+#define PCT_DONE    0x52
+#define PCT_PROMPT  0x54
+#define PCT_LNBRK   0x55
+#define PCT_NEXT    0x56
+#define PCT_LINE    0x57
+#define PCT_CONT    0x58
+#define PCT_PARA    0x59
+#define PCT_TARGET  0x5a
+#define PCT_USER    0x5b
+#define PCT_ENEMY   0x5c
+#define PCT_CTXT    0x5d
+#define PCT_MALE    0x5f
+#define PCT_FEMALE  0x60
+#define PCT_SHINY   0x61
+#define PCT_BALL    0x62
+#define PCT_HP1     0x63
+#define PCT_HP2     0x64
+#define PCT_NOHP    0x65
+#define PCT_FULLHP  0x6d
+#define PCT_HPEND   0x6e
+#define PCT_NONO    0x72
+#define PCT_XP1     0x73
+#define PCT_XP2     0x74
+#define PCT_NOXP    0x75
+#define PCT_FULLXP  0x7d
+#define PCT_XPEND   0x7e
+#define PCT_BOLDH   0xcb
+#define PCT_PO      0xd0
+#define PCT_KE      0xd1
+#define PCT_PK      0xd2
+#define PCT_MN      0xd3
+#define PCT_ID      0xd4
+#define PCT_LV      0xd6
+#define PCT_BOLDP   0xd7
+#define PCT_SHARP   0xdf
+#define PCT_PHONE   0xf6
+#define PCT_BLACK   0xf7
+#define PCT_PLAYER  0x4f
+#define PCT_RIVAL   0x50
+#define PCT_TRENDY  0x51
 #define PCT_SPACE  0x7f
 #define PCT_POKE   0x4d   /* n-gram: prints "Poké" */
 #define PCT_POKEMON 0x4e  /* n-gram: prints "Pokémon" */

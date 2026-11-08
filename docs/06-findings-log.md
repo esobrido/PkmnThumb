@@ -261,6 +261,33 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   posición exacta se guían por algo que **absorbe** (pared, borde del mapa o la propia
   puerta), no por contar frames.
 
+## Trampas nuevas (fase 1: los comandos de texto)
+
+- **Un comando de texto que no se entiende no se ignora: arrastra sus argumentos.** Los
+  bytes `$00-$09` tienen longitud variable (`<NUM>` 3 bytes, `<SOUND>` 1, `<FAR>` 3), así
+  que imprimir el comando «como si fuera una letra» mete además sus argumentos en el
+  diálogo. La caja tiene que consumir **todos** los comandos aunque todavía no exista el
+  sistema del que dependen; los que no hacen nada llevan escrito por qué.
+- **La tabla de comandos se lee de `constants/charmap.asm`, no se copia.** Doce `#define`
+  escritos a mano en el generador son doce oportunidades de imprimir basura; ahora
+  `text_commands()` los parsea y el extractor falla si no encuentra ninguno.
+- **`<WAIT>` no es un salto de página.** Para el impresor a mitad de página, parpadea el
+  ▼ y A **sigue imprimiendo en la misma página**; sólo después A pasa a la siguiente. Al
+  revés, el texto se parte en dos cajas donde el original no lo hacía.
+- **`<PAUSE>` tampoco es un botón.** Es `DelayFrames` de 30 frames
+  (`TextCommand_PAUSE`), con A/B como atajo: si se trata como `<WAIT>`, cada `<PAUSE>`
+  del juego se convierte en una pulsación que el jugador no esperaba.
+- **El relleno de un `<NUM>` es un espacio que separa palabras.** Con el reflow por
+  palabras, los espacios que añade el formateo cortaban la palabra y el número salía
+  pegado al texto anterior. El impresor distingue ahora un espacio *del flujo* (separa
+  palabra) de un espacio *de una expansión* (es un glifo más).
+- **`<NUM>` no tiene WRAM que leer.** Tres argumentos son dirección baja, alta y formato;
+  sin memoria del juego, el port pregunta al llamante por esa dirección (`TextVars.nums`)
+  y una dirección no registrada imprime "?", no un número inventado.
+- **`<ASM>` es la mitad insegura.** En el original salta a código encajado en el propio
+  flujo de texto (`jp hl`); el port lo trata como fin de cadena, que es la otra rama del
+  original, antes que imprimir instrucciones de máquina como letras.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -281,7 +308,8 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - `game/src/game.c` renderiza 8 mapas con paleta por tile y por entorno, mueve al jugador
   en pasos de 16 px con colisión real, panea la cámara, dibuja los NPCs y **cruza
   puertas**: fundido de 10+10 frames, carga del destino y vuelta afuera por la estera.
-- Verificado: `scripts/test.sh` (15 programas unitarios y 7 escenarios, todos en verde),
+- Verificado: `scripts/test.sh` (15 programas unitarios y 7 escenarios, todos en verde,
+  `test_text_box` incluidos los 24 comandos),
   build host y de device, captura headless (`docs/img/door.png` es la secuencia
   exterior → blanco → interior), movimiento con `MOTE_KEYS` y compilación sin warnings
   propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).

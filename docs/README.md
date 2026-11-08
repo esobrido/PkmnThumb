@@ -30,7 +30,7 @@ pausa con las cuatro entradas reales. Ocho mapas cargan en caliente y **las puer
 funcionan**: entras a las cinco casas de New Bark Town con el fundido de 10+10 frames del
 original y sales por la estera. Faltan las pantallas del menú, las conexiones entre
 mapas (andar de un mapa a otro), los scripts, la batalla, el audio y el resto de
-sistemas. El módulo compila a un `.mote` de 48 KB.
+sistemas. El módulo compila a un `.mote` de 49 KB.
 
 ## Principio rector
 

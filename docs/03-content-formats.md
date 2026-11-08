@@ -240,6 +240,42 @@ escapes) y generar texto plano en C. Los comandos (`<PLAYER>`, `<RAM>`, `<NUM>`,
 Fuente: `gfx/font/*.png` — `normal.png` es 128×64 = 16×8 celdas de 8×8 (fuente
 principal); también `bold`, `italic`, `narrow`, `serif`, `chicago`, `micr`, `space`.
 
+### Comandos de texto
+
+Los bytes `$00`-`$09` y `$52`-`$5d` no son caracteres: son órdenes que el motor de texto
+interpreta (`home/text.asm`, tabla `TextCommands`) y **arrastran argumentos**. Un impresor
+que no los conozca no los ignora: imprime el comando *y sus argumentos* como letras.
+
+| Byte | Comando | Argumentos | Qué hace el original |
+|---|---|---|---|
+| $00 | `<START>` | — | la cadena empieza aquí |
+| $01 | `<RAM>` | dirección (2) | imprime la cadena que hay en WRAM |
+| $02 | `<WAIT>` | — | cursor parpadeante; espera a A/B |
+| $03 | `<ASM>` | — | salta a código encajado en el propio flujo (o lo termina) |
+| $04 | `<NUM>` | dir. (2) + formato (1) | imprime el número de esa dirección, con `formato & $f` dígitos |
+| $05 | `<PAUSE>` | — | 30 frames de pausa, o A/B |
+| $06 | `<SOUND>` | id de efecto (1) | `PlaySFX` + `WaitSFX` |
+| $07 | `<DAY>` | — | "Sunday"…"Saturday" |
+| $08 | `<FAR>` | banco + dirección (3) | imprime una cadena de otro banco |
+| $09 | `<PLURAL>` | — | elige singular o plural |
+| $52 | `<DONE>` | — | fin |
+| $54 | `<PROMPT>` | — | fin y pregunta sí/no |
+| $55 | `<LNBRK>` | — | salto sin espacio |
+| $56 | `<NEXT>` | — | página nueva, sin borrar |
+| $57 | `<LINE>` | — | línea nueva |
+| $58 | `<CONT>` | — | línea nueva sin espacio |
+| $59 | `<PARA>` | — | página nueva |
+| $5a-$5c | `<TARGET>` `<USER>` `<ENEMY>` | — | nombres de los combatientes |
+| $5d | `<CTXT>` | — | marca del decodificador contextual |
+
+El extractor emite esa tabla **parseando `constants/charmap.asm`** (`text_commands()`),
+no copiándola: un byte transcrito mal imprimiría basura en vez de fallar al extraer.
+
+De los 23 textos extraídos **ninguno usa comandos** aparte de `<START>`: son diálogos
+planos. Los comandos llegan con los scripts de mapa (fase 2), y el impresor del port ya
+los consume todos (`text/box.c`), porque un comando desconocido no se ignora solo:
+arrastra sus argumentos consigo.
+
 ## Scripts de mapa
 
 `macros/scripts/maps.asm` define macros (`def_scene_scripts`, `scene_script`,

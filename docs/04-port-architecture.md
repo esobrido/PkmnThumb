@@ -151,6 +151,27 @@ Dos piezas, ambas puras y con test:
 glifos: corta por palabras, pagina en `$59`/`$56`, revela un glifo cada 2 frames, espera
 A entre páginas (`A` a media página la completa) y pinta el ▼ parpadeante en la esquina.
 
+**Los comandos se consumen todos**, no sólo los saltos de página (lista completa en
+`docs/03`). Un comando desconocido no se ignora: arrastra sus argumentos, así que
+imprimirlo como letras saca basura en medio del diálogo. Los que necesitan algo que el
+port aún no tiene se saltan a conciencia y con un comentario que lo dice: `<SOUND>` (no
+hay audio), `<RAM>` y `<FAR>` (las cadenas viven en WRAM o en otro banco, que el
+extractor no emite), `<DAY>` (no hay reloj, SYS-05) y los nombres de combate. `<ASM>`
+termina el texto, que es la mitad segura del comportamiento del original.
+
+Dos comandos sí hacen algo y son **paradas dentro de la página**, no saltos:
+
+- `<WAIT>` para el impresor en seco (el ▼ parpadea) y **A sigue imprimiendo en la misma
+  página**; sólo después A pasa de página. Es lo que hace el cursor del original.
+- `<PAUSE>` es sólo un retardo de 30 frames, sin botón.
+
+La parada se guarda por glifo, así que cae en el sitio exacto del flujo, incluso a mitad
+de palabra ("are you`<WAIT>`ready?").
+
+`<NUM>` imprime el número que el llamante haya registrado para esa dirección
+(`TextVars.nums`): no hay WRAM que leer, y una dirección no registrada imprime "?" en
+lugar de un número inventado.
+
 **Reflow.** El original parte las líneas a 20 columnas y aquí caben 15, así que la caja
 **ignora** los `$57`/`$58` y re-envuelve por palabras; `$59`/`$56` sí son página nueva.
 Se pierden las alineaciones manuales (poemas, menús), que de todos modos no pasan por
@@ -186,9 +207,10 @@ portada es de 16 tiles de alto, no de 18.
 
 Las etiquetas son las del propio juego, extraídas a bytes del charmap (`#dex`, `#mon`,
 `Bag`, `<PLAYER>`), así que `<PLAYER>` imprime el nombre real y `#dex` se expande a
-"POKédex" por la misma ruta que el diálogo. Ninguna de las cuatro pantallas existe aún:
-`A` cierra el menú y deja la entrada elegida en el log del dispositivo, que es el punto
-donde se engancharán (TXT-06).
+"POKédex" por la misma ruta que el diálogo. Sólo Options tiene pantalla: las otras cuatro
+son Pokédex, equipo, mochila y tarjeta de entrenador, y no tienen datos que mostrar hasta
+que existan los sistemas de GAM-02/GAM-04/GAM-06 (GAM-07 las cubre). Hoy `A` sobre ellas
+cierra el menú y deja la entrada elegida en el log, que es el punto donde se engancharán.
 
 ## UI: la pantalla de Option
 
@@ -258,15 +280,16 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús) | ver `.mote`: **48 584 B** de código+datos |
-| RAM de módulo (`.bss`) | **2 972 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús) | ver `.mote`: **49 556 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 044 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 48 584 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 49 556 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
-son casi todo el crecimiento desde los 28 512 B de la 0.7.0—, los diálogos, la fuente y
+son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
+las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y
 el menú. El presupuesto de flash no es el problema en esta fase: lo será la extracción
 en lote (458 mapas, 53 tilesets), que es CON-01/CON-02.
 

@@ -163,9 +163,9 @@ static void test_player_name(void) {
     src[n++] = font_code_from_ascii('!');
     src[n++] = PCT_DONE;
 
-    FontNames names = { "CHRIS", "KRIS" };
+    TextVars vars = { { "CHRIS", "KRIS" }, 0, 0 };
     TextBox b;
-    textbox_open(&b, src, n, &names);
+    textbox_open(&b, src, n, &vars);
 
     char line[16];
     row_text(&b, 0, line);
@@ -237,6 +237,209 @@ static void test_draw(void) {
     assert(fb2[0] == 0x1111);
 }
 
+/* ---- the text commands of home/text.asm -------------------------------- */
+
+/* Build a stream out of ASCII plus raw control bytes interleaved: the tests
+ * write "ab" then a command, which is how the original's strings look. */
+static int put(uint8_t *out, int n, const char *s) {
+    for (; *s; s++) out[n++] = font_code_from_ascii(*s);
+    return n;
+}
+
+static void test_wait_gate(void) {
+    uint8_t src[32];
+    int n = 0;
+    n = put(src, n, "ab");
+    src[n++] = PCT_WAIT;
+    n = put(src, n, "cd");
+    src[n++] = PCT_DONE;
+
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    char line[16];
+
+    /* The page is laid out whole, but the printer stops before the "c" and
+     * waits for A: that is the original's blinking cursor, not a page break,
+     * and it does not insert a space where the command was. */
+    textbox_update(&b, 100);
+    assert(textbox_waiting(&b));
+    row_text(&b, 0, line);
+    assert(strcmp(line, "abcd") == 0);
+    assert(textbox_visible(&b, 0, 0));
+    assert(textbox_visible(&b, 0, 1));
+    assert(!textbox_visible(&b, 0, 2));     /* "c" is behind the <WAIT> */
+    assert(!textbox_visible(&b, 0, 3));
+
+    /* A resumes printing on the same page, and the box does not start over. */
+    textbox_advance(&b);
+    assert(textbox_is_open(&b));
+    assert(!textbox_waiting(&b));
+    textbox_update(&b, 100);
+    assert(textbox_visible(&b, 0, 2));
+    assert(textbox_visible(&b, 0, 3));
+    row_text(&b, 0, line);
+    assert(strcmp(line, "abcd") == 0);
+
+    /* ...and only then does A close it. */
+    textbox_advance(&b);
+    assert(!textbox_is_open(&b));
+}
+
+static void test_wait_with_instant_speed(void) {
+    uint8_t src[32];
+    int n = 0;
+    n = put(src, n, "ab");
+    src[n++] = PCT_WAIT;
+    n = put(src, n, "cd");
+    src[n++] = PCT_DONE;
+
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    textbox_set_speed(&b, 0);               /* Instant: no letter animation */
+    textbox_update(&b, 1);
+    /* Instant still cannot jump an input gate: it stops in front of it. */
+    assert(textbox_waiting(&b));
+    assert(textbox_visible(&b, 0, 1));
+    assert(!textbox_visible(&b, 0, 2));
+    textbox_advance(&b);
+    textbox_update(&b, 1);
+    assert(textbox_visible(&b, 0, 3));
+}
+
+static void test_pause_is_a_delay_not_a_gate(void) {
+    uint8_t src[32];
+    int n = 0;
+    n = put(src, n, "ab");
+    src[n++] = PCT_PAUSE;
+    n = put(src, n, "cd");
+    src[n++] = PCT_DONE;
+
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    textbox_update(&b, 2 * TB_TICKS);       /* both letters of "ab" */
+    assert(textbox_visible(&b, 0, 1));
+    textbox_update(&b, 10);                 /* inside the 30 frame stall */
+    assert(!textbox_waiting(&b));           /* <PAUSE> needs no button */
+    assert(!textbox_visible(&b, 0, 2));
+    textbox_update(&b, TB_PAUSE_FRAMES);    /* the stall elapses... */
+    assert(!textbox_visible(&b, 0, 2) == 0);
+    textbox_update(&b, 2 * TB_TICKS);
+    assert(textbox_visible(&b, 0, 2));
+    assert(textbox_visible(&b, 0, 3));
+    /* The page is done: now it waits for A like any other, because that is the
+     * end of the text, not because of the <PAUSE>. */
+    assert(textbox_waiting(&b));
+    textbox_advance(&b);
+    assert(!textbox_is_open(&b));
+}
+
+static void test_num(void) {
+    /* <NUM> lo hi fmt, with fmt's low nibble = how wide the number prints. */
+    uint8_t src[64];
+    int n = 0;
+    n = put(src, n, "n ");
+    src[n++] = PCT_NUM; src[n++] = 0x73; src[n++] = 0xd0; src[n++] = 0x04;
+    n = put(src, n, " ");
+    src[n++] = PCT_NUM; src[n++] = 0x73; src[n++] = 0xd0; src[n++] = 0x08;
+    n = put(src, n, " ");
+    src[n++] = PCT_NUM; src[n++] = 0x00; src[n++] = 0xc0; src[n++] = 0x03;
+    src[n++] = PCT_DONE;
+
+    static const TextNum nums[] = { { 0xd073, 3000 } };
+    TextVars vars = { { "CHRIS", "SILVER" }, nums, 1 };
+    TextBox b;
+    textbox_open(&b, src, n, &vars);
+    char line[16];
+    /* Padded to the requested width: 4 digits as they are, 8 at "   3000". The
+     * 17 cells wrap, so the unregistered address lands on the second row and
+     * prints one "?" instead of a made-up number. */
+    row_text(&b, 0, line);
+    assert(strcmp(line, "n 3000     3000") == 0);
+    row_text(&b, 1, line);
+    assert(strcmp(line, "?") == 0);
+
+    /* With no vars at all, <NUM> is still consumed: it must not leak its three
+     * argument bytes as glyphs. */
+    textbox_open(&b, src, n, 0);
+    row_text(&b, 0, line);
+    assert(strcmp(line, "n ? ? ?") == 0);
+}
+
+static void test_commands_with_arguments_are_skipped(void) {
+    uint8_t src[64];
+    int n = 0;
+    n = put(src, n, "a");
+    src[n++] = PCT_SOUND; src[n++] = 0x07;          /* one byte: the sfx id */
+    src[n++] = PCT_RAM;   src[n++] = 0x00; src[n++] = 0xd1;
+    src[n++] = PCT_FAR;   src[n++] = 0x05; src[n++] = 0x00; src[n++] = 0x40;
+    n = put(src, n, "b");
+    src[n++] = PCT_DONE;
+
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    char line[16];
+    row_text(&b, 0, line);
+    /* "ab": not "a\x07\x00..." — the arguments are consumed, not printed. */
+    assert(strcmp(line, "ab") == 0);
+}
+
+static void test_commands_that_print_nothing(void) {
+    uint8_t src[64];
+    int n = 0;
+    n = put(src, n, "a");
+    src[n++] = PCT_DAY;      /* no clock in the port (SYS-05) */
+    src[n++] = PCT_TARGET;
+    src[n++] = PCT_USER;
+    src[n++] = PCT_ENEMY;
+    src[n++] = PCT_CTXT;     /* compression marker */
+    src[n++] = PCT_PLURAL;
+    src[n++] = PCT_START;    /* a second <START> is harmless */
+    n = put(src, n, "b");
+    src[n++] = PCT_DONE;
+
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    char line[16];
+    row_text(&b, 0, line);
+    assert(strcmp(line, "ab") == 0);
+
+    /* <ASM> ends the stream: whatever follows is inline code, not text. */
+    uint8_t asm_src[16];
+    int m = 0;
+    m = put(asm_src, m, "ab");
+    asm_src[m++] = PCT_ASM;
+    asm_src[m++] = 0x21; asm_src[m++] = 0x00;
+    asm_src[m++] = PCT_DONE;
+    textbox_open(&b, asm_src, m, 0);
+    row_text(&b, 0, line);
+    assert(strcmp(line, "ab") == 0);
+}
+
+static void test_truncated_command_does_not_read_past_the_end(void) {
+    /* A stream that ends right after <NUM>: the arguments are missing, which a
+     * hand-edited or badly extracted string can do. It must not read past the
+     * array; the address it never saw is unknown, so the digits are "?". */
+    uint8_t src[8];
+    int n = 0;
+    n = put(src, n, "a");
+    src[n++] = PCT_NUM;
+    src[n++] = PCT_DONE;
+    TextBox b;
+    textbox_open(&b, src, n, 0);
+    char line[16];
+    row_text(&b, 0, line);
+    assert(strcmp(line, "a?") == 0);
+
+    uint8_t src2[8];
+    int m = 0;
+    m = put(src2, m, "a");
+    src2[m++] = PCT_SOUND;                  /* argument cut off */
+    TextBox b2;
+    textbox_open(&b2, src2, m, 0);
+    row_text(&b2, 0, line);
+    assert(strcmp(line, "a") == 0);
+}
+
 int main(void) {
     test_short_line();
     test_reflow_wraps_at_words();
@@ -246,6 +449,13 @@ int main(void) {
     test_player_name();
     test_long_word_and_empty_text();
     test_draw();
+    test_wait_gate();
+    test_wait_with_instant_speed();
+    test_pause_is_a_delay_not_a_gate();
+    test_num();
+    test_commands_with_arguments_are_skipped();
+    test_commands_that_print_nothing();
+    test_truncated_command_does_not_read_past_the_end();
     printf("text/box: ok\n");
     return 0;
 }

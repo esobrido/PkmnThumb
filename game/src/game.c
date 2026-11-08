@@ -50,7 +50,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.8.0");
+MOTE_GAME_VERSION("0.9.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -289,9 +289,12 @@ static int perf_timer;
 
 /* ---- talking ------------------------------------------------------------ */
 
-/* Names the text substitutes for <PLAYER>/<RIVAL>. A save-file name is a phase 3
- * concern, so the port starts with the Crystal defaults and says so. */
-static const FontNames k_names = { "CHRIS", "SILVER" };
+/* What the text substitutes: the names it prints in place of <PLAYER>/<RIVAL>
+ * (a save-file name is a phase 3 concern, so the port starts with the Crystal
+ * defaults and says so) and, one day, the values <NUM> prints. No string the
+ * port has extracted uses <NUM> yet, so the table is empty: an unregistered
+ * address prints "?" rather than a made-up number. */
+static const TextVars k_vars = { { "CHRIS", "SILVER" }, 0, 0 };
 
 static int dir_dx(int d) {
     return d == OW_DIR_RIGHT ? 1 : d == OW_DIR_LEFT ? -1 : 0;
@@ -318,7 +321,7 @@ static void try_talk(void) {
         int ti = pc_maps[map_index].objects[i].text;
         if (ti < 0 || ti >= PC_TEXT_COUNT) return;
         ow_actor_face(&actors[i], player.dir ^ 1);   /* face the player */
-        textbox_open(&textbox, pc_texts[ti].bytes, pc_texts[ti].len, &k_names);
+        textbox_open(&textbox, pc_texts[ti].bytes, pc_texts[ti].len, &k_vars);
         apply_text_speed();
         return;
     }
@@ -495,7 +498,7 @@ static void g_overlay(uint16_t *fb) {
                      bg_pal[7][3], bg_pal[7][0]);
     /* The pause menu goes over the world too, on the right like the original. */
     if (ui_menu_is_open(&menu))
-        ui_menu_draw(&menu, &k_names, fb, SCREEN, 0, SCREEN,
+        ui_menu_draw(&menu, &k_vars.names, fb, SCREEN, 0, SCREEN,
                      bg_pal[7][3], bg_pal[7][0]);
     /* The option screen covers the whole panel, like the original's, which hides
      * the map behind its own background. */

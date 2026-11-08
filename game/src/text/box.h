@@ -12,6 +12,26 @@
  * but the exact pixel column of a break may differ. Text that relies on manual
  * alignment (the Pokédex, menus) will not use this path anyway.
  *
+ * The whole command set of `home/text.asm` is consumed here, not just the page
+ * breaks, because a stream with a command the printer does not know would print
+ * the command *and its arguments* as glyphs:
+ *
+ *   <WAIT>    stop and blink the arrow until A (the original's
+ *             TextCommand_PROMPT_BUTTON), then carry on in the same page
+ *   <PAUSE>   a 30 frame stall, no input needed (TextCommand_PAUSE)
+ *   <NUM>     three bytes (address low, high, format); prints the number the
+ *             caller registered for that address, in `format & $f` digits
+ *   <SOUND>   one byte, skipped: there is no audio yet (TXT-10)
+ *   <RAM>     two bytes, skipped: the string lives in the GB's WRAM
+ *   <FAR>     three bytes, skipped: the string lives in another bank and the
+ *             extractor does not emit those yet
+ *   <DAY>     prints nothing: there is no clock (SYS-05)
+ *   <TARGET> <USER> <ENEMY>  battle-only names; <CTXT> is the compression
+ *             marker and prints nothing
+ *   <ASM>     ends the text: the original jumps into the bytes that follow
+ *             (inline code) or overwrites the command with '@'
+ *   <PLURAL>  nothing to print: the plural is chosen at build time
+ *
  * Pure logic: no Mote calls, no globals, no allocation.
  */
 #ifndef TEXT_BOX_H
@@ -34,16 +54,48 @@
 /* ▼: the "press A" arrow in the bottom-right cell (charmap $ed). */
 #define TB_ARROW 0xed
 
+/* Longest run of glyphs one code can produce: "Wednesday" is 9 and a 10 digit
+ * number is 10, so FONT_EXPAND_MAX (8, a name) is not enough here. */
+#define TB_RUN_MAX 12
+
+/* <PAUSE> in the original: `ld c, 30 / DelayFrames`, or A/B. */
+#define TB_PAUSE_FRAMES 30
+
+/* What a stop in the stream does when the printer reaches it. They are the
+ * original's two mid-page stalls: <WAIT> (flashing cursor, waits for A) and
+ * <PAUSE> (a short delay, no input). */
+enum { TB_STOP_NONE = 0, TB_STOP_KEY, TB_STOP_DELAY };
+
+/* <NUM> prints the number held at a WRAM address. There is no WRAM here, so the
+ * caller registers the few values its texts can name, and an unregistered
+ * address prints "?" instead of inventing a number. */
+typedef struct {
+    uint16_t addr;
+    int value;
+} TextNum;
+
+/* Everything the text stream needs from the world: the names it substitutes and
+ * the numbers it prints. */
+typedef struct {
+    FontNames names;          /* <PLAYER>, <RIVAL> */
+    const TextNum *nums;      /* <NUM> */
+    int num_count;
+} TextVars;
+
 typedef struct {
     const uint8_t *src;
     int len, pos;
 
-    /* The current code may expand to several glyphs (Poké, <PLAYER>, ...). */
-    uint8_t sub[FONT_EXPAND_MAX];
+    /* The current code may expand to several glyphs (Poké, <PLAYER>, <NUM>). */
+    uint8_t sub[TB_RUN_MAX];
     int sub_len, sub_at;
 
     uint8_t cell[TB_ROWS][TB_COLS];
     uint8_t seq[TB_ROWS][TB_COLS];   /* 1..seq_count = order of appearance */
+    uint8_t stop[TB_ROWS * TB_COLS + 1];  /* a stall before glyph number i */
+    int stop_pending;                /* set by <WAIT>/<PAUSE> until it is placed */
+    int word_stop_at, word_stop_kind;  /* ...when it lands inside the word */
+    int hold;                        /* frames left in a <PAUSE> stall */
     int seq_count;
     int revealed;
     int ticks_per_glyph;             /* 0 = print the whole page at once */
@@ -57,10 +109,13 @@ typedef struct {
     uint8_t pend[TB_COLS];
     int pend_len;
     FontNames names;
+    TextVars vars;
 } TextBox;
 
-/* Start showing `src[0..len)`. Nothing is drawn until the first update. */
-void textbox_open(TextBox *b, const uint8_t *src, int len, const FontNames *names);
+/* Start showing `src[0..len)`. Nothing is drawn until the first update.
+ * `vars` may be NULL (then names fall back to "???" and every <NUM> prints
+ * "?"). It is read during open, because the first page is laid out there. */
+void textbox_open(TextBox *b, const uint8_t *src, int len, const TextVars *vars);
 
 /* Reveal glyphs (1 per TB_TICKS frames). Ignored once the page is complete. */
 void textbox_update(TextBox *b, int frames);
@@ -70,7 +125,8 @@ void textbox_update(TextBox *b, int frames);
  * default until the caller says otherwise. */
 void textbox_set_speed(TextBox *b, int ticks);
 
-/* A pressed: finish revealing, or go to the next page, or close. */
+/* A pressed: finish revealing, or resume after a <WAIT>, or go to the next
+ * page, or close. */
 void textbox_advance(TextBox *b);
 
 int textbox_is_open(const TextBox *b);

@@ -129,9 +129,9 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 
 | ID | Sistema | Estado |
 |---|---|---|
-| EN-01 | Toolchain host sin root | ✅ `setup.sh` |
-| EN-02 | Verificación headless (capturas + input guionizado) | ✅ `shot.sh` |
-| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ✅ toolchain en `setup.sh`, `.mote` de 28 KB |
+| EN-01 | Toolchain host sin root | ✅ `scripts/setup.sh` |
+| EN-02 | Verificación headless (capturas + input guionizado) | ✅ `scripts/shot.sh` |
+| EN-03 | Build de device (`arm-none-eabi` + Pico SDK) | ✅ toolchain en `scripts/setup.sh`, `.mote` de 48 KB |
 | EN-04 | Medición de rendimiento (`perf()`) | ✅ `scripts/perf.sh` + línea `perf` por segundo |
 | EN-05 | Test de regresión visual automatizado (hash de frames) | ⬜ |
 | EN-06 | Empaquetado `.mote` y despliegue al handheld | ⬜ |
@@ -166,7 +166,7 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 | FND-06 | Cargar N mapas en tiempo de ejecución (no un header fijo) | M | ✅ `gen/world.h` + `load_map()`, RB/LB |
 | FND-07 | Animación de NPCs y frames de andar del jugador | S | ✅ cara por `object_event`, `SPIN*` in place |
 | FND-08 | Orden de dibujado: sprites sobre bloques, Y-sort | S | ✅ `ow_actor_depth_sort` (prioridad BG-sobre-OAM, ver riesgo) |
-| FND-09 | `perf()` y optimización del raster si hace falta | M | ✅ medido en host (~19 µs); no compensa optimizar aún |
+| FND-09 | `perf()` y optimización del raster si hace falta | M | ✅ medido en host (20 µs); no compensa optimizar aún |
 | FND-10 | Build de device y ejecución en el handheld | L | 🟡 `.mote` de 48 KB, empaquetado por `scripts/export.sh`; falta probarlo en hardware |
 
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el

@@ -191,8 +191,8 @@ el del propio juego ensamblado desde sus macros. No hay traducción de scripts a
 `showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
 hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
 (`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
-del arranque suman 2 473 B de bytecode, 79 etiquetas, 32 scripts de objeto y 40 celdas
-`bg_event`.
+del arranque suman 2 508 B de bytecode, 79 etiquetas, 32 scripts de objeto y 40 celdas
+`bg_event` (39 con script).
 
 Tres decisiones de forma:
 
@@ -227,8 +227,18 @@ las usan.
 A en el overworld arranca el script de la celda de enfrente, en el orden del original
 (`CheckAPressOW`): primero el `object_event` que hay ahí y, si no hay, el `bg_event`
 —cartel, estantería, la nevera—. El primero se busca recorriendo los actores; el segundo
-lo resuelve `script/trigger` (`pc_bg_event_script`), que además exige el lado correcto en
-las celdas `BGEVENT_UP/DOWN/RIGHT/LEFT` y devuelve `$ffff` si no hay nada que leer.
+lo resuelve `script/trigger` (`pc_bg_event`), que además exige el lado correcto en las
+celdas `BGEVENT_UP/DOWN/RIGHT/LEFT`, contesta que no cuando no hay nada que leer y, en una
+celda de objeto escondido, comprueba el flag antes: un objeto ya cogido deja de estar ahí,
+como en `TryBGEvent`.
+
+Las tres formas de ejecutar un `bg_event` son tres formas de rellenar el blob, no tres
+motores: un cartel es `jumptext <texto>`, una estantería es **el std script copiado
+entero** (`DifficultBookshelfScript` → `jumptext <texto de std_text>`) y un objeto
+escondido es `opentext` + `jumptext <texto de _FoundItemText con el nombre dentro>`. Por
+eso `game.c` solo distingue un caso especial: si el `bg_event` esconde un objeto, primero
+lo mete en la bolsa (`bag.c`, ids del original) y marca el flag; si la bolsa está llena no
+hace nada y la celda sigue ahí — es la rama `pocketisfull` del original, sin su texto.
 
 No hay una capa intermedia que traduzca el script a acciones: el despachador de `game.c`
 hace lo que el evento pide y vuelve a llamar,
@@ -356,13 +366,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **75 428 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 322 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **76 036 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 384 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 75 428 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 76 036 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

@@ -353,11 +353,11 @@ adelante. Siete detalles que no son evidentes:
   objeto, la party) en vez de un script: `tools/extract.py` los nombra en la salida y deja
   el objeto sin script.
 
-Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 473 B de bytecode** y 79 etiquetas en
-los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`) y **28
+Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 508 B de bytecode** y 79 etiquetas en
+los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`) y **39
 de 40 celdas `bg_event`**. Los dos mapas sin etiquetas de script
 (`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente: solo los comandos de sus
-NPCs y sus carteles, 9 B y 12 B. Lo que el ensamblador no puede resolver — datos
+NPCs y sus carteles, 9 B y 15 B. Lo que el ensamblador no puede resolver — datos
 de movimiento en otro fichero, un `dw` de otro banco, un entrenador — no se adivina: queda
 en `$FFFF` y se lista en la salida del extractor.
 
@@ -381,9 +381,20 @@ del blob, así que el port no distingue un cartel de un NPC.
 - `BGEVENT_READ` (3 celdas en el build, una de ellas apuntando a `InitialRadio`, que vive
   en otro fichero) y `BGEVENT_UP/DOWN/RIGHT/LEFT` (5 celdas) apuntan a un script del
   propio mapa, que ya está en el blob: la celda guarda su offset.
-- `BGEVENT_JUMPSTD` (9 celdas, las estanterías del laboratorio) necesita la tabla de
-  *std scripts*, y `BGEVENT_ITEM + <objeto>` (2 celdas) esconde un objeto bajo el suelo:
-  ninguna se extrae todavía, y la celda queda a `$FFFF`.
+- `BGEVENT_JUMPSTD` (9 celdas en el build, las estanterías del laboratorio) nombra una
+  entrada de `StdScripts::` (`engine/events/std_scripts.asm`, indexada en el orden de
+  `constants/std_constants.asm`): el motor salta a esa tabla, y aquí el script se **copia
+  entero** como una región más del blob. `DifficultBookshelfScript` es
+  `farjumptext DifficultBookshelfText`, que en el port es un `jumptext` normal (no hay
+  bancos) apuntando a un texto de `data/text/std_text.asm`.
+- `BGEVENT_ITEM + <objeto>` (2 celdas) es un objeto escondido: el byte del tipo **es** el
+  id del objeto sumado a `BGEVENT_ITEM`, y el cuarto campo es el flag que lo marca
+  recogido. El motor comprueba ese flag *antes* de leer y, si está limpio, entra en
+  `HiddenItemScript` con el id en `wHiddenItemID`. El extractor emite un script de dos
+  comandos (`opentext`, `jumptext <texto>`) y deja en la celda el objeto y el flag; la
+  entrega y el `setevent` los hace el juego.
+- La única celda sin script es el `BGEVENT_READ` de la radio de casa de los vecinos:
+  `InitialRadio` vive en otro fichero, así que sigue a `$FFFF` y se lista en la salida.
 
 El tipo es el byte original (`PC_BGEVENT_*` en `gen/scripts.h`), no un enum nuevo: la
 celda dice `BGEVENT_UP` y el port lo compara con la dirección del jugador en
@@ -422,14 +433,24 @@ añade a los caracteres normales:
 | `<RIVAL>` | `$50` | el del rival |
 | `<TRENDY>` | `$51` | la frase de moda (aún no portada) |
 
+Un `text` **no** emite otro `<START>` si ya se empezó: `macros/scripts/text.asm` sólo
+manda el byte cuando el bloque arranca (`_dtxt`), y los `text` siguientes aportan
+caracteres. `_FoundItemText` (`text "<PLAYER> found"`, `line ""`, `text_ram`, `text "!"`)
+es el caso que lo muestra.
+
 Como el ensamblador ya resolvió el charmap, el extractor sólo tiene que hacer el
 mapeo inverso (`maximal munch`, para que `#mon` gane a `#`) y emitir los bytes tal
-cual: no hay que imitar el compresor Huffman del ROM, porque los seis mapas de
-arranque suman **170 textos / 90 KB de header**, nada frente a los 16 MB de flash.
+cual: no hay que imitar el compresor Huffman del ROM, porque los mapas de
+arranque suman **173 textos / 91 KB de header**, nada frente a los 16 MB de flash.
 
-`text_far`, `text_asm`, `text_ram` y `text_decimal` delegan en otro fichero o en
-código: el extractor los **salta** en vez de emitir media frase, y quedarán para
-el intérprete de scripts (SCR-02).
+`text_ram` imprime el buffer que el script acaba de llenar. El port no tiene buffers de
+cadena: el extractor acepta un `ram={buffer: bytes}` y escribe esos bytes como si fueran
+texto, que es lo que hace con `wStringBuffer3` en `_FoundItemText` para cada objeto
+escondido (el nombre sale de `data/items/names.asm`, indexado por el id del original).
+
+`text_far`, `text_asm` y `text_decimal` delegan en otro fichero o en código: el extractor
+los **salta** en vez de emitir media frase, y quedarán para el intérprete de scripts
+(SCR-02).
 
 ### De un NPC a su texto
 

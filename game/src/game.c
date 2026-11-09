@@ -41,6 +41,7 @@
 #include "gfx_sprite.h"
 #include "gen/text.h"
 #include "gen/scripts.h"
+#include "bag.h"
 #include "script/vm.h"
 #include "script/trigger.h"
 #include "text/box.h"
@@ -53,7 +54,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.12.0");
+MOTE_GAME_VERSION("0.13.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -179,6 +180,7 @@ static void mark_actors(void) {
 /* Everything a map load shares: the tables, the NPCs and their blocking layer.
  * Placing the player is the caller's business (spawn or warp destination). */
 static uint8_t script_flags[PC_SCRIPT_FLAG_BYTES];
+static PcBag bag;                           /* found items; no screen yet */
 static ScrVm script;
 static const PcScriptMap *map_scripts;      /* the loaded map's bytecode, +-0 */
 static int script_active;
@@ -262,6 +264,7 @@ static void g_init(void) {
     }
 
     options_defaults(&options);
+    bag_init(&bag);
 
     ow_warp_init(&warp);
     load_map(PC_MAP_NEWBARKTOWN);
@@ -441,17 +444,25 @@ static void try_talk(void) {
         return;
     }
 
-    /* Nothing of its own there: a sign, a bookshelf, the lab's PC. The original
+    /* Nothing of its own there: a sign, a bookshelf, a hidden item. The original
      * looks for an object_event first and a bg_event second, and a bg_event can
      * be one cell or demand a side, so the facing decides. */
-    uint16_t bg = pc_bg_event_script(map_scripts, tx, ty, player.dir);
-    if (bg != 0xffff) {
-        script_object = -1;            /* no NPC to fall back to */
-        scr_vm_start(&script, map_scripts->bytes, map_scripts->len, bg,
-                     script_flags, PC_SCRIPT_FLAG_BYTES);
-        script_active = 1;
-        script_run();
+    PcTrigger t;
+    if (!pc_bg_event(map_scripts, tx, ty, player.dir, script_flags,
+                     PC_SCRIPT_FLAG_BYTES, &t))
+        return;
+    if (t.item != PC_TRIGGER_NONE) {
+        /* A hidden item is the engine's own script, not the map's: give the item
+         * first (the cell stays readable when the bag is full, as in the
+         * original) and only then mark it taken. */
+        if (!bag_add(&bag, t.item, 1)) return;
+        scr_flag_set(script_flags, PC_SCRIPT_FLAG_BYTES, t.flag, 1);
     }
+    script_object = -1;                /* no NPC to fall back to */
+    scr_vm_start(&script, map_scripts->bytes, map_scripts->len, t.script,
+                 script_flags, PC_SCRIPT_FLAG_BYTES);
+    script_active = 1;
+    script_run();
 }
 
 static void g_update(float dt) {

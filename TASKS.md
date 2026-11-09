@@ -172,8 +172,8 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (75 428 B,
-`.bss` 3 322 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (76 036 B,
+`.bss` 3 384 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
@@ -217,9 +217,9 @@ Objetivo: el mundo deja de ser un decorado.
 
 | Tarea | Detalle | Tam |
 |---|---|---|
-| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 6 mapas con scripts (2 336 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
+| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 508 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
 | SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales), `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
-| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 hablar y leer un cartel ejecutan el script de verdad. NPCs: 19 de 32 objetos llegan a texto y 13 caen al texto plano. Carteles: 28 de 40 celdas `bg_event` tienen script (22 `JUMPTEXT`, 2 `READ`, 5 direccionales); faltan las 9 estanterías (`JUMPSTD`, necesita la tabla de std scripts) y los 2 objetos escondidos del suelo (`BGEVENT_ITEM`) |
+| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y que 13 de los 32 NPCs caigan al texto plano (límite de la VM: `special`, movimientos) |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |

@@ -383,6 +383,40 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   llega al frame pedido y no hay ni logs ni captura; para depurar posiciones, apuntar a un
   fichero real.
 
+## Trampas nuevas (fase 2: estanterías y objetos del suelo)
+
+- **Un `bg_event` que nombra un std script no lleva puntero, lleva un índice.**
+  `BGEVENT_JUMPSTD, difficultbookshelf` guarda la entrada de `StdScripts::` (el orden de
+  `constants/std_constants.asm`), y el motor salta a esa tabla. La tabla y los `const`
+  pueden desincronizarse en silencio y cada celda apuntaría al script de al lado, así que
+  el extractor compara los dos y falla si no cuadran. En el port el script se **copia** al
+  blob: no hace falta tabla en flash ni un opcode `jumpstd`.
+- **`farjumptext` es `jumptext` sin bancos.** `DifficultBookshelfScript` es una línea,
+  `farjumptext DifficultBookshelfText`; el `far` es un puntero de 3 bytes a otro banco, que
+  aquí no existe. Traducirlo a mano en cada std script no escala: el ensamblador mapea el
+  macro al opcode normal.
+- **Los textos de los std scripts viven en otro fichero** (`data/text/std_text.asm` y
+  `common.asm`), y las etiquetas de `data/text` son globales (`Label::`). `label_blocks`
+  solo entendía `Label:`, así que `_FoundItemText` "no existía"; aceptar `::` lo arregla y no
+  cambia ningún texto de los mapas (se comprobó con el diff de `gen/text.h`).
+- **Un `text` de más no emite otro `<START>`.** En `_FoundItemText` hay dos `text` separados
+  por un `text_ram`; `macros/scripts/text.asm` solo manda `$00` en el primer `text` del
+  bloque (`_dtxt`), y los siguientes son caracteres. Un extractor que emita `$00` por cada
+  `text` mete un byte de control en mitad de la frase.
+- **`BGEVENT_ITEM` no está en los `const`**: es `DEF ... EQU NUM_BGEVENTS`, así que el id
+  del objeto es `tipo - BGEVENT_ITEM` y el cuarto campo es el **flag**, no el objeto. El
+  motor comprueba el flag antes de leer; el port hace lo mismo en `script/trigger` y el
+  flag lo pone el juego al meter el objeto en la bolsa.
+- **Un objeto escondido puede estar en una celda que no se pisa.** `place_player` recoloca
+  al jugador si el punto de spawn está bloqueado (busca la celda libre más cercana), así
+  que un spawn temporal en la celda de al lado puede acabar dos celdas más allá y la A cae
+  en el vacío. Verificar con la tabla de collision de `world.h` en la mano, no a ojo.
+- **La primera A de una receta se pierde mientras la caja está revelándose.** Abrir un
+  texto y "cerrarlo" con la siguiente ventana puede ser la misma pulsación; para ver si un
+  texto se reabre hace falta una tercera ventana separada ~50 lecturas. Los logs sí salen
+  desde `g_update` (los de `g_init` también), así que el oráculo barato es un contador
+  temporal en `try_talk` sobre la salida del host.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,

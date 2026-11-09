@@ -37,22 +37,30 @@ static int jump(ScrVm *vm, uint16_t at) {
     return 1;
 }
 
-static uint8_t flag_get(const ScrVm *vm, uint16_t id) {
-    if (!vm->flags || id >= (uint16_t)(vm->nflags * 8u)) {
+uint8_t scr_flag_get(const uint8_t *flags, uint16_t nflags, uint16_t id) {
+    if (!flags || id >= (uint16_t)(nflags * 8u)) {
         return 0;
     }
-    return (uint8_t)((vm->flags[id >> 3] >> (id & 7)) & 1);
+    return (uint8_t)((flags[id >> 3] >> (id & 7)) & 1);
 }
 
-static void flag_set(ScrVm *vm, uint16_t id, int on) {
-    if (!vm->flags || id >= (uint16_t)(vm->nflags * 8u)) {
+void scr_flag_set(uint8_t *flags, uint16_t nflags, uint16_t id, int on) {
+    if (!flags || id >= (uint16_t)(nflags * 8u)) {
         return;
     }
     if (on) {
-        vm->flags[id >> 3] |= (uint8_t)(1u << (id & 7));
+        flags[id >> 3] |= (uint8_t)(1u << (id & 7));
     } else {
-        vm->flags[id >> 3] &= (uint8_t)~(1u << (id & 7));
+        flags[id >> 3] &= (uint8_t)~(1u << (id & 7));
     }
+}
+
+static uint8_t flag_get(const ScrVm *vm, uint16_t id) {
+    return scr_flag_get(vm->flags, vm->nflags, id);
+}
+
+static void flag_set(ScrVm *vm, uint16_t id, int on) {
+    scr_flag_set(vm->flags, vm->nflags, id, on);
 }
 
 void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,

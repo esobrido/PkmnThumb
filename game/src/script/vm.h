@@ -81,6 +81,14 @@ void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
  * result of the check the game just ran (checkevent, checkitem, …). */
 void scr_vm_set_cond(ScrVm *vm, uint8_t value);
 
+/* The shared flag/event bit array, for the work the engine does outside a
+ * script: a bg_event tests its flag before it reads (that is what turns a taken
+ * hidden item into an empty cell) and sets it when the item is picked up. Ids
+ * outside the array read as 0 and writes are dropped, so a caller never has to
+ * bounds-check first. */
+uint8_t scr_flag_get(const uint8_t *flags, uint16_t nflags, uint16_t id);
+void scr_flag_set(uint8_t *flags, uint16_t nflags, uint16_t id, int on);
+
 /* Run until the script ends or needs something done. */
 ScrRun scr_vm_next(ScrVm *vm, ScrOut *out);
 

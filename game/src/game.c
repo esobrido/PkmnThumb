@@ -40,6 +40,8 @@
 #include "ow/warp.h"
 #include "gfx_sprite.h"
 #include "gen/text.h"
+#include "gen/scripts.h"
+#include "script/vm.h"
 #include "text/box.h"
 #include "ui/menu.h"
 #include "ui/options.h"
@@ -50,7 +52,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.10.1");
+MOTE_GAME_VERSION("0.11.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -175,10 +177,26 @@ static void mark_actors(void) {
 
 /* Everything a map load shares: the tables, the NPCs and their blocking layer.
  * Placing the player is the caller's business (spawn or warp destination). */
+static uint8_t script_flags[PC_SCRIPT_FLAG_BYTES];
+static ScrVm script;
+static const PcScriptMap *map_scripts;      /* the loaded map's bytecode, +-0 */
+static int script_active;
+static int script_object;                   /* actor index, for the fallback */
+
+static const PcScriptMap *scripts_for(int index) {
+    for (int i = 0; i < PC_SCRIPT_MAP_COUNT; i++) {
+        if (pc_script_maps[i].map_index == index) return &pc_script_maps[i];
+    }
+    return 0;
+}
+
 static void load_map_tables(int index) {
     if (index < 0) index = PC_MAP_COUNT - 1;
     if (index >= PC_MAP_COUNT) index = 0;
     map_index = index;
+    map_scripts = scripts_for(index);
+    script_active = 0;              /* walking into a door abandons a script */
+    script_object = -1;
 
     const PcMapDef *d = &pc_maps[index];
     tileset = &pc_tilesets[d->tileset];
@@ -308,21 +326,117 @@ static int dir_dy(int d) {
  * struct here and the rules (open/close/confirm) in ui/menu. */
 static UiMenu menu;
 
-/* A with an NPC in the facing cell opens its text. Same rules as the GB: the
- * player must be between cells to talk (mid-step never talks), and an NPC whose
- * script only jumps elsewhere (Lyra's ObjectEvent, for instance) has no text
- * yet, so A does nothing. */
+/* ---- running an NPC's script ---------------------------------------------
+ * The one talked to runs its own bytecode from gen/scripts.h, in the same order
+ * the GB would. A with an NPC in the facing cell starts it: the player must be
+ * between cells to talk (mid-step never talks), and the object_event tells which
+ * script it is — a label of the map's file, or a single command the engine runs
+ * as a script (`OBJECTTYPE_COMMAND, jumptextfaceplayer, Text`).
+ *
+ * The VM never touches the world: it stops and asks. This is the part that knows
+ * what a textbox, an actor and a sound are, so it maps those requests onto the
+ * port. It also decides what happens with a command the port cannot run yet
+ * (battle, movement of other objects, scenes): the script stops and the NPC
+ * falls back to the flat text the extractor read for it, so talking never goes
+ * silent halfway. */
+/* The object's own text, the one the port showed before it could run scripts. */
+static void talk_text(const PcObject *o) {
+    if (o->text < 0 || o->text >= PC_TEXT_COUNT) return;
+    textbox_open(&textbox, pc_texts[o->text].bytes, pc_texts[o->text].len, &k_vars);
+    apply_text_speed();
+}
+
+static void script_run(void);
+
+/* A command the port cannot run stops the script, and the NPC says its flat
+ * text instead: half a conversation is worse than the old behaviour. The log
+ * line is the only way to see it from the outside, so it names the opcode. */
+static void script_fallback(unsigned opcode) {
+    script_active = 0;
+    char line[48], *w = line;
+    for (const char *s = "script: stopped at "; *s; s++) *w++ = *s;
+    for (const char *s = "0x"; *s; s++) *w++ = *s;
+    const char *hex = "0123456789abcdef";
+    *w++ = hex[(opcode >> 4) & 15];
+    *w++ = hex[opcode & 15];
+    *w = 0;
+    mote->log(line);
+    if (script_object >= 0 && script_object < actor_count) {
+        talk_text(&pc_maps[map_index].objects[script_object]);
+    }
+}
+
+/* One request: do it here and return, or run on to the next one. */
+static void script_run(void) {
+    for (int guard = 0; guard < 256 && script_active; guard++) {
+        ScrOut out;
+        ScrRun r = scr_vm_next(&script, &out);
+        if (r == SCR_RUN_END) {
+            script_active = 0;
+            return;
+        }
+        if (r == SCR_RUN_ERROR) {
+            script_fallback(0);       /* bytecode ran off the end, or it is dead */
+            return;
+        }
+        switch (out.kind) {
+        case SCR_EV_TEXT:
+            if (out.a >= PC_TEXT_COUNT) {
+                script_fallback(0xfffe);   /* text index outside pc_texts */
+                return;
+            }
+            textbox_open(&textbox, pc_texts[out.a].bytes, pc_texts[out.a].len, &k_vars);
+            apply_text_speed();
+            return;                    /* the script waits for the box */
+        case SCR_EV_FACE: {
+            /* object 0 is the player; LAST_TALKED is the one being talked to. */
+            int who = out.a == SCR_OBJECT_LAST_TALKED || out.a == 0 ? script_object : out.a;
+            int dir = out.b;
+            if (who >= 0 && who < actor_count) {
+                if (dir == SCR_FACE_TO_PLAYER) {
+                    int dx = (player.px >> 4) - (actors[who].px >> 4);
+                    int dy = (player.py >> 4) - (actors[who].py >> 4);
+                    dir = dx > 0 ? OW_DIR_RIGHT : dx < 0 ? OW_DIR_LEFT
+                        : dy > 0 ? OW_DIR_DOWN : OW_DIR_UP;
+                }
+                ow_actor_face(&actors[who], dir);
+            }
+            break;
+        }
+        case SCR_EV_TEXT_OPEN:
+        case SCR_EV_TEXT_CLOSE:
+        case SCR_EV_SOUND:             /* no audio yet (TXT-10) */
+        case SCR_EV_DELAY:             /* the original waits; nothing blocks here */
+        case SCR_EV_SPRITE:            /* appear/disappear is not drawn yet */
+            break;
+        case SCR_EV_UNSUPPORTED:
+            script_fallback(out.a);
+            return;
+        default:
+            script_fallback(0);
+            return;
+        }
+    }
+}
+
 static void try_talk(void) {
     if (player.step_left) return;
     int tx = (player.px >> 4) + dir_dx(player.dir);
     int ty = (player.py >> 4) + dir_dy(player.dir);
     for (int i = 0; i < actor_count; i++) {
         if ((actors[i].px >> 4) != tx || (actors[i].py >> 4) != ty) continue;
-        int ti = pc_maps[map_index].objects[i].text;
-        if (ti < 0 || ti >= PC_TEXT_COUNT) return;
+        const PcObject *o = &pc_maps[map_index].objects[i];
         ow_actor_face(&actors[i], player.dir ^ 1);   /* face the player */
-        textbox_open(&textbox, pc_texts[ti].bytes, pc_texts[ti].len, &k_vars);
-        apply_text_speed();
+        script_object = i;
+        if (map_scripts && map_scripts->objects && i < map_scripts->object_count &&
+                map_scripts->objects[i] != 0xffff) {
+            scr_vm_start(&script, map_scripts->bytes, map_scripts->len,
+                         map_scripts->objects[i], script_flags, PC_SCRIPT_FLAG_BYTES);
+            script_active = 1;
+            script_run();
+            return;
+        }
+        talk_text(o);
         return;
     }
 }
@@ -348,6 +462,8 @@ static void g_update(float dt) {
     if (textbox_is_open(&textbox)) {
         textbox_update(&textbox, 1);
         if (mote_just_pressed(in, MOTE_BTN_A)) textbox_advance(&textbox);
+        /* The box closing is the script's cue to carry on from the showtext. */
+        if (!textbox_is_open(&textbox) && script_active) script_run();
         if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
         return;
     }

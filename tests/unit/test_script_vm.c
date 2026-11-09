@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gen/text.h"
+#include "gen/world.h"
 #include "gen/scripts.h"
 #include "script/vm.h"
 
@@ -228,7 +230,78 @@ static void test_real_script(void) {
     r = scr_vm_next(&vm, &out);
     CHECK(r == SCR_RUN_EVENT && out.kind == SCR_EV_TEXT,
           "then shows the real text");
-    CHECK(out.a < PCS_TEXT_INDEX_COUNT, "and the index is inside pc_texts");
+    CHECK(out.a < PC_TEXT_COUNT, "and the index is inside pc_texts");
+}
+
+/* `jumptext` is a jump, not a call: the script is over after its text, and the
+ * bytes that follow are text, not code (here: an opcode that would be
+ * unsupported, which proves it was never read). */
+static void test_jumptext_ends(void) {
+    uint8_t code[4] = { PCS_JUMPTHISTEXT, 0x01, 0x00, 0xaa };
+    ScrVm vm;
+    ScrOut out;
+    scr_vm_start(&vm, code, sizeof code, 0, NULL, 0);
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT && out.kind == SCR_EV_TEXT &&
+          out.a == 1, "jumpthistext shows its text");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "and then the script is over");
+
+    /* The faceplayer variants turn first, then show the same text. */
+    uint8_t face[3] = { PCS_JUMPTEXTFACEPLAYER, 0x02, 0x00 };
+    scr_vm_start(&vm, face, sizeof face, 0, NULL, 0);
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT && out.kind == SCR_EV_FACE,
+          "jumptextfaceplayer turns to the player first");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT && out.kind == SCR_EV_TEXT &&
+          out.a == 2, "then shows the text");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "and ends");
+}
+
+/* The objects' scripts are the ones the game runs now. 32 of the 40 objects in
+ * the build have one; 19 reach a text and 13 stop at a command the port does not
+ * run yet (`readvar`, `special`, movement of other objects). Where the extractor's
+ * flat guess and the script agree it is because both read the same text; the
+ * four that differ are scripts whose first text depends on an event (the teacher
+ * says one of three things), which is exactly why the VM is the better oracle. */
+static void test_object_scripts(void) {
+    int with_script = 0, reached = 0, same = 0, outside = 0;
+    for (int m = 0; m < PC_SCRIPT_MAP_COUNT; m++) {
+        const PcScriptMap *sm = &pc_script_maps[m];
+        const PcMapDef *def = NULL;
+        for (int i = 0; i < PC_MAP_COUNT; i++) {
+            if (i == sm->map_index) def = &pc_maps[i];
+        }
+        if (!def || !sm->objects) {
+            continue;
+        }
+        for (int o = 0; o < sm->object_count && o < def->object_count; o++) {
+            if (sm->objects[o] == 0xffff) {
+                continue;
+            }
+            with_script++;
+            ScrVm vm;
+            ScrOut out;
+            uint8_t flags[PC_SCRIPT_FLAG_BYTES] = { 0 };
+            scr_vm_start(&vm, sm->bytes, sm->len, sm->objects[o], flags, sizeof flags);
+            for (int step = 0; step < 64; step++) {
+                ScrRun r = scr_vm_next(&vm, &out);
+                if (r != SCR_RUN_EVENT || out.kind == SCR_EV_UNSUPPORTED) {
+                    break;
+                }
+                if (out.kind != SCR_EV_TEXT) {
+                    continue;
+                }
+                reached++;
+                if (out.a >= PCS_TEXT_INDEX_COUNT) {
+                    outside++;
+                }
+                same += out.a == def->objects[o].text;
+                break;
+            }
+        }
+    }
+    CHECK(with_script == 32, "32 objects have a script of their own");
+    CHECK(reached == 19, "19 of them reach a text before a command the port lacks");
+    CHECK(outside == 0, "every text they show is inside pc_texts");
+    CHECK(same == 15, "15 agree with the flat text the extractor read for them");
 }
 
 /* `verbosegiveitem SILK_SCARF, iffalse_endtext` takes its item as an argument
@@ -267,6 +340,8 @@ int main(void) {
     test_real_callback();
     test_real_script();
     test_real_giveitem();
+    test_jumptext_ends();
+    test_object_scripts();
     if (failures) {
         printf("script/vm: %d failure(s)\n", failures);
         return 1;

@@ -66,6 +66,7 @@ void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
     vm->flags = flags;
     vm->nflags = nflags;
     vm->pending = SCR_TEXT_NONE;
+    vm->ending = 0;
     for (int i = 0; i < SCR_STACK_MAX; i++) {
         vm->stack[i] = 0;
     }
@@ -97,6 +98,10 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
         uint16_t text = vm->pending;
         vm->pending = SCR_TEXT_NONE;
         return event(out, SCR_EV_TEXT, text, 0);
+    }
+    if (vm->ending) {
+        /* The text a `jumptext` showed was the last thing the script did. */
+        return SCR_RUN_END;
     }
 
     for (;;) {
@@ -196,6 +201,54 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
                 return SCR_RUN_ERROR;
             }
             return event(out, SCR_EV_TEXT, at, 0);
+
+        /* `jumptext` does not return: it jumps to {opentext; repeattext;
+         * waitendtext}, so the script is over once the box closes. `jumpthistext`
+         * and `jumpthisopenedtext` print the text that follows them in place,
+         * which the extractor turns into an index just like any other. */
+        case PCS_JUMPTEXT:
+        case PCS_JUMPTHISTEXT:
+        case PCS_JUMPTHISOPENEDTEXT:
+            at = word(vm);
+            if (vm->dead) {
+                return SCR_RUN_ERROR;
+            }
+            vm->ending = 1;
+            return event(out, SCR_EV_TEXT, at, 0);
+
+        case PCS_JUMPTEXTFACEPLAYER:
+        case PCS_JUMPTHISTEXTFACEPLAYER:
+            vm->pending = word(vm);
+            if (vm->dead) {
+                return SCR_RUN_ERROR;
+            }
+            vm->ending = 1;
+            return event(out, SCR_EV_FACE, SCR_OBJECT_LAST_TALKED,
+                         SCR_FACE_TO_PLAYER);
+
+        /* The `if*_jumptext` variants test hScriptVar and otherwise skip the
+         * pointer: same two bytes, different meaning. */
+        case PCS_IFTRUE_JUMPTEXT:
+        case PCS_IFTRUE_JUMPTEXTFACEPLAYER:
+        case PCS_IFFALSE_JUMPTEXT:
+        case PCS_IFFALSE_JUMPTEXTFACEPLAYER:
+            at = word(vm);
+            if (vm->dead) {
+                return SCR_RUN_ERROR;
+            }
+            if ((vm->cond != 0) == (op == PCS_IFTRUE_JUMPTEXT ||
+                                    op == PCS_IFTRUE_JUMPTEXTFACEPLAYER)) {
+                if (op == PCS_IFTRUE_JUMPTEXTFACEPLAYER ||
+                        op == PCS_IFFALSE_JUMPTEXTFACEPLAYER) {
+                    vm->pending = at;
+                    vm->ending = 1;
+                    return event(out, SCR_EV_FACE, SCR_OBJECT_LAST_TALKED,
+                                 SCR_FACE_TO_PLAYER);
+                }
+                vm->ending = 1;
+                return event(out, SCR_EV_TEXT, at, 0);
+            }
+            break;
 
         case PCS_OPENTEXT:         /* Script_opentext */
             return event(out, SCR_EV_TEXT_OPEN, 0, 0);

@@ -190,8 +190,8 @@ congela (sin caminar y sin giros de NPC) mientras la caja está abierta.
 el del propio juego ensamblado desde sus macros. No hay traducción de scripts a C: un
 `showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
 hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
-(`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los seis mapas
-con scripts del arranque suman 2 336 B de bytecode y 79 etiquetas.
+(`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
+del arranque suman 2 407 B de bytecode, 79 etiquetas y 32 scripts de objeto.
 
 Tres decisiones de forma:
 
@@ -218,11 +218,38 @@ Lo que falta, y se dice en voz alta: **un opcode que la VM no conoce no se inter
 medias**. Devuelve `SCR_EV_UNSUPPORTED` con su número y la VM se marca muerta, porque sus
 argumentos tienen longitudes distintas por comando y seguir leyendo sería interpretar
 datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `special`,
-`jumpstd` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que las usan.
+`jumpstd`, `readvar` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que
+las usan.
 
-La VM todavía no está enganchada al juego: hablar con un NPC sigue abriendo el texto que
-extrae `first_text_ref`. El enganche es SCR-03, y necesita antes las escenas y el
-movimiento de NPCs para no dejar media conversación sin hacer.
+### Hablar con un NPC ya ejecuta su script
+
+A en el overworld arranca el script del `object_event` que está en la celda de enfrente
+(`try_talk` en `game.c`). No hay una capa intermedia que traduzca el script a acciones:
+el despachador de `game.c` hace lo que el evento pide y vuelve a llamar,
+
+| Evento | Qué hace el port |
+|---|---|
+| `SCR_EV_TEXT` | abre el textbox con ese índice y deja **esperando** a la VM |
+| `SCR_EV_FACE` | gira el actor (o lo calcula, si es "hacia el jugador") |
+| `SCR_EV_TEXT_OPEN`/`_CLOSE` | nada: el port abre una caja por texto |
+| `SCR_EV_SOUND`, `_DELAY` | nada todavía (audio es TXT-10) |
+| `SCR_EV_SPRITE` | nada: `appear`/`disappear` no se dibujan aún (SCR-06) |
+| `SCR_RUN_END` | el script acabó |
+| `SCR_EV_UNSUPPORTED`, `SCR_RUN_ERROR` | **vuelta al texto plano del objeto** |
+
+Esa última fila es la decisión que importa: un comando que el port no ejecuta no deja al
+NPC mudo a media frase. El script se detiene, se anota el opcode en el log (`script:
+stopped at 0x1e`) y se muestra el texto que `first_text_ref` extrajo para ese objeto, que
+es el comportamiento que tenía el port antes de tener VM. Medido: de los 32 objetos con
+script, 19 llegan a un texto y 13 se paran en el primero (cinco de la madre, que empieza por
+`readvar`); de los 19, quince coinciden con el texto plano y cuatro no, porque su primer
+texto depende de un evento (la maestra de New Bark Town elige entre tres).
+
+Los flags y eventos están en **un solo array** de `PC_SCRIPT_FLAG_BYTES` (222 B en este
+build, el índice más alto que tocan los scripts), porque la VM recibe un puntero y un
+tamaño. En el original son dos arrays (`wEngineFlags` y `wEventFlags`); compartirlo es
+aceptable mientras ningún script mezcle `FLAG_x` con `EVENT_x` del mismo número, y está
+anotado en `TASKS.md` como deuda.
 
 ## UI: listas y menú de pausa
 
@@ -320,13 +347,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **64 904 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 052 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **74 860 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 322 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 64 904 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 74 860 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

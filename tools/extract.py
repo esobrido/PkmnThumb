@@ -380,21 +380,43 @@ ANIM = {
 
 
 def map_objects(pc, map_name):
-    """object_event rows -> (x, y, SPRITE_NAME, facing, anim).
+    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, script).
 
     Coordinates are in 16x16 px tiles (the same grid the player walks on), not
     in 32px map blocks — an object_event y of 15 on a 9-block-tall map only fits
     that way. The movement type (`SPRITEMOVEDATA_*`) decides both the facing the
     NPC stands with and whether it animates in place.
+
+    `script` is how the object answers to A, in the original's two shapes:
+    (`label`, name) is an OBJECTTYPE_SCRIPT, a label of this same file, and
+    (`command`, macro, arg) is an OBJECTTYPE_COMMAND, which the engine runs as a
+    script of one command (`jumptextfaceplayer MyText`). None is an object with
+    no script: the null `ObjectEvent` field of a scene-only NPC.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
     out = []
-    pat = re.compile(r"^\s*object_event\s+(\d+)\s*,\s*(\d+)\s*,\s*(SPRITE_\w+)\s*,"
-                     r"\s*(SPRITEMOVEDATA_\w+)", re.M)
-    for m in pat.finditer(txt):
-        mv = m.group(4)
-        out.append((int(m.group(1)), int(m.group(2)), m.group(3),
-                    FACING.get(mv, 0), ANIM.get(mv, 0)))
+    for line in txt.splitlines():
+        m = re.match(r"^\s*object_event\s+(.+)$", line.split(";")[0])
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) < 11:
+            die("%s: object_event with %d fields: %r" % (map_name, len(a), line.strip()))
+        kind, spec = a[8], None
+        if kind == "OBJECTTYPE_SCRIPT":
+            if a[10] not in ("ObjectEvent", "0", "-1"):
+                spec = ("label", a[10])
+        elif kind == "OBJECTTYPE_COMMAND":
+            spec = ("command", a[9], a[10])
+        elif kind in ("OBJECTTYPE_ITEMBALL", "OBJECTTYPE_TRAINER",
+                      "OBJECTTYPE_GENERICTRAINER", "OBJECTTYPE_POKEMON"):
+            # Their script is not a label or a command but a record the game reads
+            # itself (the item, the trainer party); nothing to assemble yet.
+            print("object   %-18s %s not ported" % (map_name, kind))
+        else:
+            die("%s: unknown object type %r" % (map_name, kind))
+        out.append((int(a[0]), int(a[1]), a[2], FACING.get(a[3], 0),
+                    ANIM.get(a[3], 0), spec))
     return out
 
 
@@ -553,23 +575,69 @@ def parse_text_block(body, charmap, keys):
     return None if not out else bytes(out) + b"\x52"
 
 
+# `jumpthistext` and its two siblings print "the text where the script is
+# standing", which is either the block that follows inside the same script or,
+# when the command is the script's last line (`jumpthisopenedtext` often is), the
+# text label that comes next in the file.
+INLINE_TEXT = ("jumpthistext", "jumpthistextfaceplayer", "jumpthisopenedtext")
+
+
+def inline_keys(map_name, blocks):
+    """{script label: [(text key, inline_here), ...]} in script order.
+
+    `inline_here` is True when the text follows the command inside the same
+    block, so its bytes have to be pulled out of `pc_texts` under a made-up name;
+    otherwise the key is the label that comes next, which is already a text.
+    """
+    out = {}
+    for i, (label, body) in enumerate(blocks):
+        n = 0
+        for j, raw in enumerate(body):
+            if raw.split(";")[0].strip() not in INLINE_TEXT:
+                continue
+            rest = [l for l in body[j + 1:] if l.split(";")[0].strip()]
+            if rest:
+                key = "%s_%s_inline%s" % (map_name, label,
+                                          "" if n == 0 else str(n + 1))
+            else:
+                key = blocks[i + 1][0] if i + 1 < len(blocks) else None
+            out.setdefault(label, []).append((key, bool(rest)))
+            n += 1
+    return out
+
+
 def map_texts(pc, map_name, charmap, keys):
     """Every plain-text label in a map, in file order: {label: bytes}.
 
     The map file holds the NPC scripts and their text; `text_far` and friends are
     skipped (they live elsewhere). Order is kept because the generated table is
-    read side by side with the .asm by a human.
+    read side by side with the .asm by a human. The texts a script prints inline
+    (`jumpthistext`) have no label of their own, so they are named here too.
     """
     txt = map_source(pc, map_name)
+    blocks = list(label_blocks(txt))
     out = {}
-    for label, body in label_blocks(txt):
+    for label, body in blocks:
         blk = parse_text_block(body, charmap, keys)
-        if blk is None:
-            continue
-        head = next((l.strip() for l in body if l.strip()), "")
-        if not re.match(r"text\b", head):
-            continue
-        out[label] = blk
+        if blk is not None:
+            head = next((l.strip() for l in body if l.strip()), "")
+            if re.match(r"text\b", head):
+                out[label] = blk
+    for label, keys_in in inline_keys(map_name, blocks).items():
+        body = dict(blocks)[label]
+        n = 0
+        for j, raw in enumerate(body):
+            if raw.split(";")[0].strip() not in INLINE_TEXT:
+                continue
+            key, here = keys_in[n]
+            n += 1
+            if not here:
+                continue
+            blk = parse_text_block(body[j + 1:], charmap, keys)
+            if blk is None:
+                die("%s.%s: inline text after %s is not plain text"
+                    % (map_name, label, raw.strip()))
+            out[key] = blk
     return out
 
 
@@ -611,14 +679,15 @@ def first_text_ref(texts, script, blocks, charmap, keys, map_name):
     body = blocks.get(script)
     if body is None:
         return None
-    for i, raw in enumerate(body):
+    blocks_list = list(blocks.items())
+    for raw in body:
         m = re.match(r"\s*(?:if\w+_)?(showtext|writetext|jumptext\w*)\s+(\w+)", raw)
         if m and m.group(2) in texts:
             return (m.group(2), texts[m.group(2)])
-        if re.match(r"\s*jumpthistext\w*\s*$", raw):
-            blk = parse_text_block(body[i + 1:], charmap, keys)
-            if blk is not None:
-                return ("%s_%s_inline" % (map_name, script), blk)
+    keys_in = inline_keys(map_name, blocks_list)
+    for key, _ in keys_in.get(script, []):
+        if key in texts:
+            return (key, texts[key])
     return None
 
 
@@ -1307,7 +1376,7 @@ def const_expr(expr, consts):
         return None
 
 
-def map_scripts(pc, map_name, defs, text_index):
+def map_scripts(pc, map_name, defs, text_index, obj_specs=()):
     """Assemble every script label of a map into one blob.
 
     Each entry point gets its own region, so a script can be run from its
@@ -1315,7 +1384,13 @@ def map_scripts(pc, map_name, defs, text_index):
     in the blob; a pointer to a text becomes an index into `pc_texts`, because
     the port has no ROM addresses. Anything else (movement data, another map's
     script) becomes $FFFF and is reported, not silently zeroed.
+
+    `obj_specs` are the objects' scripts (see map_objects). An OBJECTTYPE_COMMAND
+    becomes a one-command tail of the same blob, which is exactly what the engine
+    does with it (it copies the field into wScriptPointer and runs it), so every
+    object ends up pointing at a script offset and nowhere else.
     """
+    stats = {"event": -1, "flag": -1}
     blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
     header = next((body for label, body in blocks if label.endswith("_MapScriptHeader")), [])
 
@@ -1342,7 +1417,8 @@ def map_scripts(pc, map_name, defs, text_index):
         return False
 
     scripts = [(label, body) for label, body in blocks if is_script(body)]
-    if not scripts:
+    ikeys = inline_keys(map_name, blocks)
+    if not scripts and not any(spec for spec in obj_specs):
         raise Unsupported("no script labels in the map file")
 
     def assemble(label, body, labels, locals_rel):
@@ -1373,7 +1449,11 @@ def map_scripts(pc, map_name, defs, text_index):
             return None
 
         skipping = False
-        for line in body:
+        inline_n = 0
+        i = 0
+        while i < len(body):
+            line = body[i]
+            i += 1
             s = line.split(";")[0].strip()
             if not s:
                 continue
@@ -1409,7 +1489,43 @@ def map_scripts(pc, map_name, defs, text_index):
                 continue
             if parts[0] not in defs["macros"]:
                 die("%s.%s: %r is not a script macro" % (map_name, label, s))
+            if parts[0] in INLINE_TEXT:
+                # These print "the text where the script is": an index like any
+                # other command's, except the extractor is the one that knows
+                # which text that is (see inline_keys).
+                for val, width in script_sizes(defs, parts[0], []):
+                    out += [val & 0xff, (val >> 8) & 0xff][:width]
+                refs = ikeys.get(label, [])
+                if inline_n >= len(refs) or not refs[inline_n][0]:
+                    die("%s.%s: no text after %s" % (map_name, label, parts[0]))
+                key, here = refs[inline_n]
+                inline_n += 1
+                v = value(key)
+                if v is None:
+                    die("%s.%s: %s prints %s, which is not a text"
+                        % (map_name, label, parts[0], key))
+                out += [v & 0xff, (v >> 8) & 0xff]
+                if here:
+                    # Skip exactly those bytes, up to their `done`: the next line
+                    # may be another command, not more text.
+                    while i < len(body):
+                        head = body[i].split(";")[0].strip().split(None, 1)
+                        i += 1
+                        if head and head[0] in ("done", "prompt"):
+                            break
+                continue
             args = split_args(parts[1]) if len(parts) > 1 else []
+            # How many bits of flag/event state the whole build has to hold: the
+            # VM shares one bit array, so the largest index wins.
+            key = {"checkevent": "event", "setevent": "event",
+                   "clearevent": "event", "checkflag": "flag",
+                   "setflag": "flag", "clearflag": "flag"}.get(parts[0])
+            if key and args:
+                v = value(args[0].strip())
+                if isinstance(v, int):
+                    stats[key] = max(stats[key], v)
+                else:
+                    extern.discard(args[0].strip())
             for val, width in script_sizes(defs, parts[0], args):
                 if not isinstance(val, str):
                     out += [val & 0xff, (val >> 8) & 0xff][:width]
@@ -1444,7 +1560,32 @@ def map_scripts(pc, map_name, defs, text_index):
                 % (map_name, label, len(data), sizes[label]))
         blob += data
         extern |= ext
+
+    # The objects last, so every label offset above keeps its value: an object's
+    # script is a one-command region appended after the last script.
+    obj_offsets, missing = [], []
+    for i, spec in enumerate(obj_specs):
+        if spec is None:
+            obj_offsets.append(0xffff)
+            continue
+        if spec[0] == "label":
+            if spec[1] not in labels:
+                missing.append(spec[1])
+                obj_offsets.append(0xffff)
+                continue
+            obj_offsets.append(labels[spec[1]])
+            continue
+        _, macro, arg = spec
+        name = "_obj%d" % i
+        data, ext = assemble(name, ["%s %s" % (macro, arg)], labels, {})
+        obj_offsets.append(len(blob))
+        blob += data
+        extern |= ext
+    if missing:
+        print("scripts   %-22s object script(s) not in this file: %s"
+              % (map_name, ", ".join(missing)))
     return {"labels": labels, "bytes": bytes(blob), "extern": sorted(extern),
+            "objects": obj_offsets, "stats": stats,
             "locals": sum(len(v) for v in locals_rel.values())}
 
 
@@ -1459,26 +1600,47 @@ def emit_scripts(path, per_map, defs, text_index):
         f.write("\n/* text pointers inside a script are indexes into pc_texts, not addresses */\n")
         f.write("#define PCS_TEXT_INDEX_COUNT %d\n" % len(text_index))
         f.write("#define PCS_EXTERN 0xffff\n\n")
+        # Engine flags and map events share one bit array in the VM, so the size
+        # is the largest index any assembled script touches, plus one.
+        top = max([1] + [d["stats"][k] + 1 for _, d in per_map
+                         for k in ("event", "flag")])
+        f.write("/* bits of flag/event state the scripts of this build use */\n")
+        f.write("#define PC_SCRIPT_FLAG_BYTES %d\n\n" % ((top + 7) // 8))
         for i, (map_name, data) in enumerate(per_map):
             f.write("static const uint8_t scr%d_%s[%d] = {\n" % (i, map_name, len(data["bytes"])))
             for j in range(0, len(data["bytes"]), 16):
                 f.write("\t" + ",".join("0x%02x" % b for b in data["bytes"][j:j + 16]) + ",\n")
             f.write("};\n\n")
         f.write("typedef struct { const char *label; uint16_t offset; } PcScriptLabel;\n")
-        f.write("typedef struct { const char *map; const uint8_t *bytes; uint16_t len; "
-                "const PcScriptLabel *labels; uint16_t label_count; } PcScriptMap;\n\n")
+        f.write("/* map_index is the position in pc_maps, so the game can find a map's\n"
+                " * bytecode by the map it loaded. objects[] is one script offset per\n"
+                " * object_event, $ffff when the object has no script. */\n")
+        f.write("typedef struct { const char *map; int8_t map_index; const uint8_t *bytes;\n"
+                "    uint16_t len; const PcScriptLabel *labels; uint16_t label_count;\n"
+                "    const uint16_t *objects; uint8_t object_count; } PcScriptMap;\n\n")
         for i, (map_name, data) in enumerate(per_map):
             f.write("static const PcScriptLabel scr%d_labels[%d] = {\n"
                     % (i, len(data["labels"])))
             for label, off in data["labels"].items():
                 f.write('\t{ "%s", %d },\n' % (label, off))
             f.write("};\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            if not data["objects"]:
+                continue
+            f.write("static const uint16_t scr%d_objects[%d] = {\n"
+                    % (i, len(data["objects"])))
+            for j in range(0, len(data["objects"]), 8):
+                f.write("\t" + ",".join("%5d" % o if o != 0xffff else "0xffff"
+                                       for o in data["objects"][j:j + 8]) + ",\n")
+            f.write("};\n\n")
         f.write("#define PC_SCRIPT_MAP_COUNT %d\n" % len(per_map))
         f.write("static const PcScriptMap pc_script_maps[PC_SCRIPT_MAP_COUNT] = {\n")
         for i, (map_name, data) in enumerate(per_map):
-            f.write('\t{ "%s", scr%d_%s, %d, scr%d_labels, %d },\n'
-                    % (map_name, i, map_name, len(data["bytes"]), i,
-                       len(data["labels"])))
+            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d },\n'
+                    % (map_name, data["map_index"], i, map_name, len(data["bytes"]), i,
+                       len(data["labels"]),
+                       "scr%d_objects" % i if data["objects"] else "0",
+                       len(data["objects"])))
         f.write("};\n\n#endif\n")
 
 
@@ -1617,6 +1779,7 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t dir;\n"
                 "    uint8_t anim;\n"
                 "    int16_t text;              /* index into pc_texts, -1 = none */\n"
+                "    uint16_t script;           /* offset in the map's script blob, $ffff = none */\n"
                 "} PcObject;\n\n")
         f.write("typedef struct {\n"
                 "    const char *name;\n"
@@ -1643,9 +1806,12 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
             if m["objects"]:
                 f.write("static const PcObject obj_%s[%d] = {\n"
                         % (ident, len(m["objects"])))
-                for (tx, ty, si, direction, anim), text in zip(m["objects"], m["obj_text"]):
-                    f.write("\t{%4d,%4d,%2d,%d,%d,%3d},  /* tile %d,%d */\n"
-                            % (tx * 16, ty * 16, si, direction, anim, text, tx, ty))
+                for (tx, ty, si, direction, anim, script), text in zip(m["objects"],
+                                                                      m["obj_text"]):
+                    f.write("\t{%4d,%4d,%2d,%d,%d,%3d,%s},  /* tile %d,%d */\n"
+                            % (tx * 16, ty * 16, si, direction, anim, text,
+                               "%5d" % script if script != 0xffff else "0xffff",
+                               tx, ty))
                 f.write("};\n")
             if m["warps"]:
                 f.write("static const PcWarp warp_%s[%d] = {\n"
@@ -1702,6 +1868,12 @@ def main():
     map_spawn = map_spawns(pc)
     coll_name_cache = {}
 
+    # Map scripts: the original's own script bytecode, assembled from the .asm
+    # macro calls (never hand-written byte tables). They come before world.h
+    # because every object_event needs the offset of its own script.
+    defs = script_defs(pc)
+    per_map, bytes_total, extern_all = [], 0, set()
+
     for map_name in wanted:
         w, h = map_dims(pc, map_name)
         ts = map_tileset(pc, map_name)
@@ -1738,8 +1910,10 @@ def main():
 
         objects = []
         obj_text = []
-        for (bx, by, spr, direction, anim), found in zip(map_objects(pc, map_name),
-                                                       obj_labels):
+        obj_specs = []
+        for (bx, by, spr, direction, anim, spec), found in zip(map_objects(pc, map_name),
+                                                              obj_labels):
+            obj_specs.append(spec)
             name = spr[len("SPRITE_"):].lower()
             idx = next((i for i, (n, _) in enumerate(sprites) if n == name), -1)
             if idx < 0:
@@ -1785,6 +1959,25 @@ def main():
                 print("warp     %-18s %d,%d -> %s #%d NOT IN BUILD (shut)"
                       % (map_name, wx, wy, dest, dest_warp))
 
+        # The objects' scripts: an OBJECTTYPE_SCRIPT points at a label already in
+        # the blob, an OBJECTTYPE_COMMAND becomes a one-command region at the end.
+        try:
+            sdata = map_scripts(pc, map_name, defs, text_index, obj_specs)
+        except Unsupported as exc:
+            print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
+            sdata = None
+        if sdata is not None:
+            sdata["map_index"] = map_slot[map_name]
+            per_map.append((map_name, sdata))
+            bytes_total += len(sdata["bytes"])
+            extern_all |= set(sdata["extern"])
+            print("scripts   %-22s %2d labels, %4d B%s"
+                  % (map_name, len(sdata["labels"]), len(sdata["bytes"]),
+                     "" if not sdata["extern"] else
+                     ", extern: " + ", ".join(sdata["extern"])))
+        scripts_for = sdata["objects"] if sdata is not None else [0xffff] * len(objects)
+        objects = [o + (sc,) for o, sc in zip(objects, scripts_for)]
+
         maps.append({"name": map_name, "w": w, "h": h, "blocks": blocks, "ts": ti,
                      "objects": objects, "obj_text": obj_text, "warps": warps,
                      "pal": 1 if env in ("INDOOR", "GATE") else 0,
@@ -1809,23 +2002,6 @@ def main():
     print("texts     %d in %s (%d KB)"
           % (len(texts_all), tpath, os.path.getsize(tpath) // 1024))
 
-    # Map scripts: the original's own script bytecode, assembled from the .asm
-    # macro calls (never hand-written byte tables).
-    defs = script_defs(pc)
-    per_map, bytes_total, extern_all = [], 0, set()
-    for map_name in wanted:
-        try:
-            data = map_scripts(pc, map_name, defs, text_index)
-        except Unsupported as exc:
-            print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
-            continue
-        per_map.append((map_name, data))
-        bytes_total += len(data["bytes"])
-        extern_all |= set(data["extern"])
-        print("scripts   %-22s %2d labels, %4d B%s"
-              % (map_name, len(data["labels"]), len(data["bytes"]),
-                 "" if not data["extern"] else
-                 ", extern: " + ", ".join(data["extern"])))
     spath = os.path.join(out, "scripts.h")
     emit_scripts(spath, per_map, defs, text_index)
     print("scriptsvm %d opcodes, %d B of bytecode in %s (%d KB)"

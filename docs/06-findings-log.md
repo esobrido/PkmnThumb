@@ -343,6 +343,32 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   texto, el comando lee basura. Se emiten como palabras LE con el offset de la etiqueta,
   igual que un `sjump`.
 
+## Trampas nuevas (fase 2: ejecutar los scripts de un NPC)
+
+- **El noveno campo de `object_event` no siempre es una etiqueta.** Con
+  `OBJECTTYPE_COMMAND` el campo es *un comando con su argumento*
+  (`jumptextfaceplayer, Route29YoungsterText`), y el motor lo ejecuta copiando ese campo a
+  `wScriptPointer`: es un script de tres bytes que vive en el propio `object_event`. Tratarlo
+  como etiqueta deja a media población de Johto muda.
+- **`jumpthisopenedtext` suele imprimir la etiqueta *siguiente*.** El comando imprime "el
+  texto donde está el script"; cuando es la última línea del bloque (`MysticWaterGuy`), ese
+  puntero cae en el label de texto que viene después, no en un texto inline. Un extractor que
+  solo mire dentro del bloque no encuentra nada y —peor— si se conforma con "saltar líneas
+  hasta el siguiente label" se come el bloque de texto entero y desplaza todo lo que sigue.
+- **`jumptext` no vuelve.** Salta a `{opentext; repeattext; waitendtext}`: el script termina
+  con ese texto y los bytes posteriores son datos. Una VM que "continue" después del texto
+  intenta ejecutar el texto como código (se ve como `unsupported 0xbc` al cerrar la caja).
+  Se arregla con un flag de "esto era lo último", no con `pos = len`, porque `pos == len`
+  ya significa "se salió del script" y es un error.
+- **Los flags y los eventos son dos arrays en el original** (`wEngineFlags` y
+  `wEventFlags`). La VM recibe uno solo, así que `FLAG_x` y `EVENT_x` comparten bit cuando
+  el número coincide; el tamaño se calcula desde los scripts (`PC_SCRIPT_FLAG_BYTES`), no a
+  ojo, para que ningún índice caiga fuera del array.
+- **`MOTE_KEYS` no sirve para posicionar a un NPC.** Con ventanas de 100 lecturas el jugador
+  acaba al lado pero no enfrente, y un `a` a destiempo no habla (o habla a otro). Para
+  verificar diálogos, cerrar la receta contra algo que absorba (una pared, el borde) o
+  comprobarlo con la tabla de objetos de `world.h` en la mano.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,

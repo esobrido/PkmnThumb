@@ -68,6 +68,7 @@ typedef struct {
     uint8_t *flags;    /* engine flags and map events, one bit each */
     uint16_t nflags;
     uint16_t pending;  /* text owed after a `faceplayer` in a showtextfaceplayer */
+    uint8_t ending;    /* a `jumptext` was the last command: end after its text */
 } ScrVm;
 
 /* `at` is an offset inside `code` — a label offset from gen/scripts.h.

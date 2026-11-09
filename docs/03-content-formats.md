@@ -332,12 +332,47 @@ adelante. Siete detalles que no son evidentes:
   (`DEBUG=0`, `FAITHFUL=0`) y descarta la rama que no se ensambla; si un `DEF()` no está
   declarado, falla en voz alta.
 
-Cobertura actual (`gen/scripts.h`): 224 opcodes, 2 336 B de bytecode y 79 etiquetas en los
-seis mapas del arranque (New Bark Town, Route29, CherrygroveCity, ElmsLab, PlayersHouse1F y
-LyrasHouse1F). `PlayersNeighborsHouse` y `ElmsHouse` no tienen ninguna etiqueta de script.
-Lo que el ensamblador no puede resolver — datos de movimiento en otro fichero, un `dw` de
-otro banco, un entrenador — no se adivina: queda en `$FFFF` y se lista en la salida del
-extractor.
+### De un NPC a su script
+
+`object_event` guarda en su noveno campo **cómo responde a A**, y hay dos formas:
+
+```asm
+	object_event 29, 12, SPRITE_POKEFAN_F, SPRITEMOVEDATA_SPINRANDOM_SLOW, 0, 0, -1, \
+		PAL_NPC_PURPLE, OBJECTTYPE_SCRIPT, 0, TuscanyScript, EVENT_ROUTE_29_TUSCANY_OF_TUESDAY
+	object_event 27, 16, SPRITE_SCHOOLBOY, SPRITEMOVEDATA_WALK_UP_DOWN, 1, 0, -1, \
+		PAL_NPC_GREEN, OBJECTTYPE_COMMAND, jumptextfaceplayer, Route29YoungsterText, -1
+```
+
+- `OBJECTTYPE_SCRIPT` es una **etiqueta de script** del mismo fichero, que ya está en el
+  blob: el objeto guarda su offset (`PcObject.script`).
+- `OBJECTTYPE_COMMAND` es **un comando con su argumento**. El motor lo "ejecuta" copiando
+  ese campo a `wScriptPointer`, así que el extractor emite ese comando como una región de
+  tres bytes al final del blob: el objeto apunta a un script de una línea, exactamente como
+  el original. `ObjectEvent` en ese campo es el valor nulo (NPC de escena, sin diálogo).
+- `OBJECTTYPE_ITEMBALL`/`TRAINER`/`POKEMON`/`GENERICTRAINER` leen una ficha propia (el
+  objeto, la party) en vez de un script: `tools/extract.py` los nombra en la salida y deja
+  el objeto sin script.
+
+Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 407 B de bytecode** y 79 etiquetas en
+los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`). Los dos
+mapas sin etiquetas de script (`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente:
+solo los comandos de sus NPCs, 9 B y 6 B. Lo que el ensamblador no puede resolver — datos
+de movimiento en otro fichero, un `dw` de otro banco, un entrenador — no se adivina: queda
+en `$FFFF` y se lista en la salida del extractor.
+
+### Texto que no tiene etiqueta
+
+`jumpthistext`, `jumpthistextfaceplayer` y `jumpthisopenedtext` imprimen **dónde está el
+script**, no una etiqueta. Hay dos sitios donde eso cae:
+
+- dentro del mismo bloque, después del comando (`jumpthistext` + `text "..."`);
+- en la **etiqueta siguiente** del fichero, que es lo normal cuando el comando es la última
+  línea del script (así termina `MysticWaterGuy` en Ciudad Cerezo, imprimiendo
+  `MysticWaterGuyTextAfter`).
+
+El extractor distingue los dos y emite el índice de `pc_texts` como operando de 2 bytes, que
+no es lo que dice el `.asm` (allí no hay operando) pero sí lo que el port necesita: la VM no
+tiene que adivinar dónde acaba un texto dentro del blob.
 
 ## Texto
 
@@ -361,7 +396,7 @@ añade a los caracteres normales:
 Como el ensamblador ya resolvió el charmap, el extractor sólo tiene que hacer el
 mapeo inverso (`maximal munch`, para que `#mon` gane a `#`) y emitir los bytes tal
 cual: no hay que imitar el compresor Huffman del ROM, porque los seis mapas de
-arranque suman **153 textos / 82 KB de header**, nada frente a los 16 MB de flash.
+arranque suman **170 textos / 90 KB de header**, nada frente a los 16 MB de flash.
 
 `text_far`, `text_asm`, `text_ram` y `text_decimal` delegan en otro fichero o en
 código: el extractor los **salta** en vez de emitir media frase, y quedarán para

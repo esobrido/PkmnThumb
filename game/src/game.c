@@ -42,6 +42,7 @@
 #include "gen/text.h"
 #include "gen/scripts.h"
 #include "script/vm.h"
+#include "script/trigger.h"
 #include "text/box.h"
 #include "ui/menu.h"
 #include "ui/options.h"
@@ -52,7 +53,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.11.0");
+MOTE_GAME_VERSION("0.12.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -438,6 +439,18 @@ static void try_talk(void) {
         }
         talk_text(o);
         return;
+    }
+
+    /* Nothing of its own there: a sign, a bookshelf, the lab's PC. The original
+     * looks for an object_event first and a bg_event second, and a bg_event can
+     * be one cell or demand a side, so the facing decides. */
+    uint16_t bg = pc_bg_event_script(map_scripts, tx, ty, player.dir);
+    if (bg != 0xffff) {
+        script_object = -1;            /* no NPC to fall back to */
+        scr_vm_start(&script, map_scripts->bytes, map_scripts->len, bg,
+                     script_flags, PC_SCRIPT_FLAG_BYTES);
+        script_active = 1;
+        script_run();
     }
 }
 

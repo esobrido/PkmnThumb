@@ -369,6 +369,20 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   verificar diálogos, cerrar la receta contra algo que absorba (una pared, el borde) o
   comprobarlo con la tabla de objetos de `world.h` en la mano.
 
+- **`bg_event` es lo que hay delante cuando no hay nadie.** El motor prueba
+  `object_event` y luego `bg_event`; un cartel, una estantería o la nevera no son tiles de
+  colisión ni NPCs, así que sin esa segunda búsqueda A no hacía nada aunque el jugador
+  estuviera mirando al cartel.
+- **`BGEVENT_JUMPTEXT` no apunta a un script**, apunta a un texto: el motor se fabrica el
+  script (`jumptext <puntero>`) y lo ejecuta. Tratarlo como etiqueta de script no compila;
+  el port emite esos tres bytes.
+- **El cambio de mapa de depuración (RB/LB) no recoloca al jugador.** Conserva la posición
+  del mapa anterior, así que una receta que empieza con RB no está en el spawn de destino:
+  para posicionarse, entrar por la puerta o mirar la tabla de celdas.
+- **`MOTE_SHOT=/dev/null` no ejecuta la receta.** Sin un PNG donde escribir, el host no
+  llega al frame pedido y no hay ni logs ni captura; para depurar posiciones, apuntar a un
+  fichero real.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,

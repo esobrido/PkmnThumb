@@ -191,7 +191,8 @@ el del propio juego ensamblado desde sus macros. No hay traducción de scripts a
 `showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
 hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
 (`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
-del arranque suman 2 407 B de bytecode, 79 etiquetas y 32 scripts de objeto.
+del arranque suman 2 473 B de bytecode, 79 etiquetas, 32 scripts de objeto y 40 celdas
+`bg_event`.
 
 Tres decisiones de forma:
 
@@ -221,11 +222,16 @@ datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `spec
 `jumpstd`, `readvar` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que
 las usan.
 
-### Hablar con un NPC ya ejecuta su script
+### Hablar, leer un cartel: los dos acaban en la VM
 
-A en el overworld arranca el script del `object_event` que está en la celda de enfrente
-(`try_talk` en `game.c`). No hay una capa intermedia que traduzca el script a acciones:
-el despachador de `game.c` hace lo que el evento pide y vuelve a llamar,
+A en el overworld arranca el script de la celda de enfrente, en el orden del original
+(`CheckAPressOW`): primero el `object_event` que hay ahí y, si no hay, el `bg_event`
+—cartel, estantería, la nevera—. El primero se busca recorriendo los actores; el segundo
+lo resuelve `script/trigger` (`pc_bg_event_script`), que además exige el lado correcto en
+las celdas `BGEVENT_UP/DOWN/RIGHT/LEFT` y devuelve `$ffff` si no hay nada que leer.
+
+No hay una capa intermedia que traduzca el script a acciones: el despachador de `game.c`
+hace lo que el evento pide y vuelve a llamar,
 
 | Evento | Qué hace el port |
 |---|---|
@@ -236,6 +242,9 @@ el despachador de `game.c` hace lo que el evento pide y vuelve a llamar,
 | `SCR_EV_SPRITE` | nada: `appear`/`disappear` no se dibujan aún (SCR-06) |
 | `SCR_RUN_END` | el script acabó |
 | `SCR_EV_UNSUPPORTED`, `SCR_RUN_ERROR` | **vuelta al texto plano del objeto** |
+
+Las dos capas acaban en la misma VM y en el mismo despachador: `try_talk` sólo cambia
+qué offset le pasa a `scr_vm_start`.
 
 Esa última fila es la decisión que importa: un comando que el port no ejecuta no deja al
 NPC mudo a media frase. El script se detiene, se anota el opcode en el log (`script:
@@ -347,13 +356,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **74 860 B** de código+datos |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **75 428 B** de código+datos |
 | RAM de módulo (`.bss`) | **3 322 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 74 860 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 75 428 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

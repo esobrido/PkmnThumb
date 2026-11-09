@@ -353,12 +353,41 @@ adelante. Siete detalles que no son evidentes:
   objeto, la party) en vez de un script: `tools/extract.py` los nombra en la salida y deja
   el objeto sin script.
 
-Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 407 B de bytecode** y 79 etiquetas en
-los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`). Los dos
-mapas sin etiquetas de script (`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente:
-solo los comandos de sus NPCs, 9 B y 6 B. Lo que el ensamblador no puede resolver — datos
+Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 473 B de bytecode** y 79 etiquetas en
+los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`) y **28
+de 40 celdas `bg_event`**. Los dos mapas sin etiquetas de script
+(`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente: solo los comandos de sus
+NPCs y sus carteles, 9 B y 12 B. Lo que el ensamblador no puede resolver — datos
 de movimiento en otro fichero, un `dw` de otro banco, un entrenador — no se adivina: queda
 en `$FFFF` y se lista en la salida del extractor.
+
+### De un cartel a su script
+
+`bg_event` es la segunda capa de "lo que hay delante": el motor busca un
+`object_event` en la celda y, si no hay, un `bg_event` (`CheckAPressOW` →
+`TryObjectEvent` → `TryBGEvent`). La fila lleva la celda, el tipo y el puntero:
+
+```asm
+	bg_event  8,  8, BGEVENT_JUMPTEXT, NewBarkTownSignText
+	bg_event  6,  1, BGEVENT_UP,       PlayersHouse1FTVScript
+	bg_event  2,  1, BGEVENT_READ,     ElmsLabHealingMachine
+	bg_event  6,  1, BGEVENT_JUMPSTD,  difficultbookshelf
+	bg_event  3,  2, BGEVENT_ITEM + POTION, EVENT_NEW_BARK_TOWN_HIDDEN_POTION
+```
+
+- `BGEVENT_JUMPTEXT` no apunta a un script: el motor **construye** uno
+  (`jumptext <texto>`) y lo ejecuta. El extractor emite esos mismos tres bytes al final
+del blob, así que el port no distingue un cartel de un NPC.
+- `BGEVENT_READ` (3 celdas en el build, una de ellas apuntando a `InitialRadio`, que vive
+  en otro fichero) y `BGEVENT_UP/DOWN/RIGHT/LEFT` (5 celdas) apuntan a un script del
+  propio mapa, que ya está en el blob: la celda guarda su offset.
+- `BGEVENT_JUMPSTD` (9 celdas, las estanterías del laboratorio) necesita la tabla de
+  *std scripts*, y `BGEVENT_ITEM + <objeto>` (2 celdas) esconde un objeto bajo el suelo:
+  ninguna se extrae todavía, y la celda queda a `$FFFF`.
+
+El tipo es el byte original (`PC_BGEVENT_*` en `gen/scripts.h`), no un enum nuevo: la
+celda dice `BGEVENT_UP` y el port lo compara con la dirección del jugador en
+`script/trigger`.
 
 ### Texto que no tiene etiqueta
 

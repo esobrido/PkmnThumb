@@ -420,6 +420,65 @@ def map_objects(pc, map_name):
     return out
 
 
+def map_bg_events(pc, map_name, consts, text_index):
+    """bg_event rows -> (x, y, kind, spec), in file order.
+
+    `bg_event x, y, FUNCTION, arg` is a cell that answers to A: a sign, a
+    bookshelf, a healing machine, a trash can. The engine looks it up by the
+    tile the player faces (`CheckFacingBGEvent`) after no object_event matched,
+    so these act as the second layer of "what is in front of me".
+
+    `spec` is what the port has to run:
+    - (`label`, name) for BGEVENT_READ and the four directional kinds: an
+      ordinary script of this same map file.
+    - (`text`, label) for BGEVENT_JUMPTEXT, where the engine builds the script
+      itself (`jumptext <pointer>`), so the port emits that same one-command
+      script instead of the text.
+    - None for the kinds it cannot run yet: BGEVENT_JUMPSTD needs the std script
+      table, BGEVENT_IFSET/IFNOTSET keep a flag in front of their pointer, and
+      BGEVENT_ITEM and up are hidden items with an item id in the type byte.
+    """
+    names = ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN", "BGEVENT_RIGHT",
+             "BGEVENT_LEFT", "BGEVENT_IFSET", "BGEVENT_IFNOTSET",
+             "BGEVENT_JUMPTEXT")
+    missing = [n for n in names if n not in consts]
+    if missing:
+        die("constants/script_constants.asm: no %s" % ", ".join(missing))
+    out = []
+    for line in map_source(pc, map_name).splitlines():
+        m = re.match(r"^\s*bg_event\s+(.+)$", line.split(";")[0])
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) < 4:
+            die("%s: bg_event with %d fields: %r" % (map_name, len(a), line.strip()))
+        kindtxt = a[2]
+        if kindtxt in consts:
+            kind = consts[kindtxt]
+            base = kindtxt
+        else:
+            # `BGEVENT_ITEM + POTION`: the item id is added to the type byte, and
+            # BGEVENT_ITEM itself is `DEF ... EQU NUM_BGEVENTS`, not a `const`.
+            head, _, tail = kindtxt.partition("+")
+            base, item = head.strip(), tail.strip()
+            first = consts.get(base)
+            if first is None and base == "BGEVENT_ITEM":
+                first = max(consts["BGEVENT_GROTTOITEM"], consts["BGEVENT_JUMPSTD"]) + 1
+            if not item or first is None or item not in consts:
+                die("%s: unknown bg event type %r" % (map_name, kindtxt))
+            kind = first + consts[item]
+        spec = None
+        if base == "BGEVENT_JUMPTEXT":
+            spec = ("text", a[3])
+        elif base in ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN",
+                      "BGEVENT_RIGHT", "BGEVENT_LEFT"):
+            spec = ("label", a[3])
+        elif base != "BGEVENT_ITEM":
+            print("bg       %-18s %d,%d %s not ported" % (map_name, int(a[0]), int(a[1]), base))
+        out.append((int(a[0]), int(a[1]), kind, spec))
+    return out
+
+
 # ---------------------------------------------------------------------- text
 # The game's text is already a bytecode: `text` starts it ($00), then the
 # charmap bytes, with $56/$57/$58/$59 for next/line/cont/para and $52 for done.
@@ -1376,7 +1435,7 @@ def const_expr(expr, consts):
         return None
 
 
-def map_scripts(pc, map_name, defs, text_index, obj_specs=()):
+def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=()):
     """Assemble every script label of a map into one blob.
 
     Each entry point gets its own region, so a script can be run from its
@@ -1389,6 +1448,11 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=()):
     becomes a one-command tail of the same blob, which is exactly what the engine
     does with it (it copies the field into wScriptPointer and runs it), so every
     object ends up pointing at a script offset and nowhere else.
+
+    `bg_events` are the bg_event cells (see map_bg_events), appended after the
+    objects for the same reason. BGEVENT_JUMPTEXT is the same trick as an
+    OBJECTTYPE_COMMAND: the engine builds `jumptext <text>` and runs it, so the
+    port emits those three bytes instead of the text.
     """
     stats = {"event": -1, "flag": -1}
     blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
@@ -1418,7 +1482,7 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=()):
 
     scripts = [(label, body) for label, body in blocks if is_script(body)]
     ikeys = inline_keys(map_name, blocks)
-    if not scripts and not any(spec for spec in obj_specs):
+    if not scripts and not any(spec for spec in obj_specs) and not any(e[3] for e in bg_events):
         raise Unsupported("no script labels in the map file")
 
     def assemble(label, body, labels, locals_rel):
@@ -1581,15 +1645,39 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=()):
         obj_offsets.append(len(blob))
         blob += data
         extern |= ext
+    # And then the bg_event cells, in the same blob: a sign's script is an offset
+    # of the same map, and a jump-text sign is a three byte script of its own.
+    bg_offsets = []
+    jump = dict(defs["opcodes"])["jumptext_command"]
+    for _, _, _, spec in bg_events:
+        if spec is None:
+            bg_offsets.append(0xffff)
+            continue
+        kind, arg = spec
+        if kind == "label":
+            if arg not in labels:
+                missing.append(arg)
+                bg_offsets.append(0xffff)
+            else:
+                bg_offsets.append(labels[arg])
+            continue
+        if arg not in text_index:
+            missing.append(arg)
+            bg_offsets.append(0xffff)
+            continue
+        t = text_index[arg]
+        bg_offsets.append(len(blob))
+        blob += [jump, t & 0xff, (t >> 8) & 0xff]
     if missing:
-        print("scripts   %-22s object script(s) not in this file: %s"
+        print("scripts   %-22s script(s) not in this file: %s"
               % (map_name, ", ".join(missing)))
     return {"labels": labels, "bytes": bytes(blob), "extern": sorted(extern),
-            "objects": obj_offsets, "stats": stats,
+            "objects": obj_offsets, "bg": bg_offsets,
+            "bg_events": bg_events, "stats": stats,
             "locals": sum(len(v) for v in locals_rel.values())}
 
 
-def emit_scripts(path, per_map, defs, text_index):
+def emit_scripts(path, per_map, defs, text_index, consts):
     """One header with the opcode names, the blobs and the label offsets."""
     with open(path, "w") as f:
         f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
@@ -1597,6 +1685,13 @@ def emit_scripts(path, per_map, defs, text_index):
         f.write("/* opcodes: the `const *_command` order of macros/scripts/events.asm */\n")
         for name, code in defs["opcodes"]:
             f.write("#define PCS_%-26s 0x%02x\n" % (name[:-len("_command")].upper(), code))
+        f.write("/* bg_event types, in the original's order (constants/script_constants.asm) */\n")
+        for name in ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN", "BGEVENT_RIGHT",
+                     "BGEVENT_LEFT", "BGEVENT_IFSET", "BGEVENT_IFNOTSET",
+                     "BGEVENT_JUMPTEXT", "BGEVENT_JUMPSTD", "BGEVENT_GROTTOITEM"):
+            if name not in consts:
+                die("constants/script_constants.asm: no %s" % name)
+            f.write("#define PC_%s %d\n" % (name, consts[name]))
         f.write("\n/* text pointers inside a script are indexes into pc_texts, not addresses */\n")
         f.write("#define PCS_TEXT_INDEX_COUNT %d\n" % len(text_index))
         f.write("#define PCS_EXTERN 0xffff\n\n")
@@ -1612,12 +1707,17 @@ def emit_scripts(path, per_map, defs, text_index):
                 f.write("\t" + ",".join("0x%02x" % b for b in data["bytes"][j:j + 16]) + ",\n")
             f.write("};\n\n")
         f.write("typedef struct { const char *label; uint16_t offset; } PcScriptLabel;\n")
+        f.write("/* A bg_event: the cell (x, y) answers to A. `kind` is the original's\n"
+                " * BGEVENT_* type byte; only READ, the four directional kinds and\n"
+                " * JUMPTEXT have a script here ($ffff otherwise). */\n")
+        f.write("typedef struct { uint8_t x, y, kind; uint16_t script; } PcBgEvent;\n")
         f.write("/* map_index is the position in pc_maps, so the game can find a map's\n"
                 " * bytecode by the map it loaded. objects[] is one script offset per\n"
-                " * object_event, $ffff when the object has no script. */\n")
+                " * object_event, bg[] one per bg_event, $ffff when there is none. */\n")
         f.write("typedef struct { const char *map; int8_t map_index; const uint8_t *bytes;\n"
                 "    uint16_t len; const PcScriptLabel *labels; uint16_t label_count;\n"
-                "    const uint16_t *objects; uint8_t object_count; } PcScriptMap;\n\n")
+                "    const uint16_t *objects; uint8_t object_count;\n"
+                "    const PcBgEvent *bg; uint8_t bg_count; } PcScriptMap;\n\n")
         for i, (map_name, data) in enumerate(per_map):
             f.write("static const PcScriptLabel scr%d_labels[%d] = {\n"
                     % (i, len(data["labels"])))
@@ -1633,14 +1733,24 @@ def emit_scripts(path, per_map, defs, text_index):
                 f.write("\t" + ",".join("%5d" % o if o != 0xffff else "0xffff"
                                        for o in data["objects"][j:j + 8]) + ",\n")
             f.write("};\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            if not data["bg"]:
+                continue
+            f.write("static const PcBgEvent scr%d_bg[%d] = {\n" % (i, len(data["bg"])))
+            for (x, y, kind, _), off in zip(data["bg_events"], data["bg"]):
+                f.write("\t{%3d, %3d, %2d, %s},\n"
+                        % (x, y, kind, "%5d" % off if off != 0xffff else "0xffff"))
+            f.write("};\n\n")
         f.write("#define PC_SCRIPT_MAP_COUNT %d\n" % len(per_map))
         f.write("static const PcScriptMap pc_script_maps[PC_SCRIPT_MAP_COUNT] = {\n")
         for i, (map_name, data) in enumerate(per_map):
-            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d },\n'
+            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d, %s, %d },\n'
                     % (map_name, data["map_index"], i, map_name, len(data["bytes"]), i,
                        len(data["labels"]),
                        "scr%d_objects" % i if data["objects"] else "0",
-                       len(data["objects"])))
+                       len(data["objects"]),
+                       "scr%d_bg" % i if data["bg"] else "0",
+                       len(data["bg"])))
         f.write("};\n\n#endif\n")
 
 
@@ -1961,8 +2071,12 @@ def main():
 
         # The objects' scripts: an OBJECTTYPE_SCRIPT points at a label already in
         # the blob, an OBJECTTYPE_COMMAND becomes a one-command region at the end.
+        # The bg_event cells go in the same blob for the same reason: a sign's
+        # script is a script of this map, and a jump-text sign is `jumptext text`.
+        sconsts = dict(defs["consts"])
+        bg_events = map_bg_events(pc, map_name, sconsts, text_index)
         try:
-            sdata = map_scripts(pc, map_name, defs, text_index, obj_specs)
+            sdata = map_scripts(pc, map_name, defs, text_index, obj_specs, bg_events)
         except Unsupported as exc:
             print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
             sdata = None
@@ -1975,6 +2089,9 @@ def main():
                   % (map_name, len(sdata["labels"]), len(sdata["bytes"]),
                      "" if not sdata["extern"] else
                      ", extern: " + ", ".join(sdata["extern"])))
+            ran = sum(1 for o in sdata["bg"] if o != 0xffff)
+            print("bg        %-22s %2d cells, %d with a script"
+                  % (map_name, len(bg_events), ran))
         scripts_for = sdata["objects"] if sdata is not None else [0xffff] * len(objects)
         objects = [o + (sc,) for o, sc in zip(objects, scripts_for)]
 
@@ -2003,7 +2120,7 @@ def main():
           % (len(texts_all), tpath, os.path.getsize(tpath) // 1024))
 
     spath = os.path.join(out, "scripts.h")
-    emit_scripts(spath, per_map, defs, text_index)
+    emit_scripts(spath, per_map, defs, text_index, dict(defs["consts"]))
     print("scriptsvm %d opcodes, %d B of bytecode in %s (%d KB)"
           % (len(defs["opcodes"]), bytes_total, spath,
              os.path.getsize(spath) // 1024))

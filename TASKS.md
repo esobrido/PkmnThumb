@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **23 hechos · 6 parciales · 64 pendientes** (el conteo incluye las tablas
+Progreso: **24 hechos · 8 parciales · 61 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -172,8 +172,8 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (49 556 B,
-`.bss` 3 044 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (76 036 B,
+`.bss` 3 384 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
@@ -217,12 +217,13 @@ Objetivo: el mundo deja de ser un decorado.
 
 | Tarea | Detalle | Tam |
 |---|---|---|
-| SCR-01 | Extractor del bytecode de scripts de mapa | L |
-| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL |
-| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | M |
+| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 508 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
+| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales), `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
+| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y que 13 de los 32 NPCs caigan al texto plano (límite de la VM: `special`, movimientos) |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
+| SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.12.0) y VM que lo ejecuta (0.10.0) | 🟡 |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |
@@ -294,6 +295,7 @@ con audio, guardado y sin caídas de fps.
 | D4 | Audio | buzzer con 2 canales / silencio + SFX | Fase 5 |
 | D5 | Ramas del contenido | Kanto completo (PC incluye Kanto) / sólo Johto | Fase 6 |
 | D6 | Guardado | 1 slot / varios con `kv_*` | Fase 3 |
+| D7 | Flags y eventos en un solo array | seguir compartido / pasarle dos arrays a la VM (`ScrVm`) | cuando un script mezcle `FLAG_x` y `EVENT_x` del mismo número, o al llegar las escenas (SCR-05) |
 
 ## 4. Riesgos
 

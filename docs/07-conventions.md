@@ -85,6 +85,9 @@ llamando a `mote build game` directamente.
 | `game/src/ui/menu.c` | `tests/unit/test_ui_menu.c` |
 | `game/src/ui/frame.c` | `tests/unit/test_ui_frame.c` |
 | `game/src/ui/options.c` | `tests/unit/test_ui_options.c` |
+| `game/src/bag.c` | `tests/unit/test_bag.c` |
+| `game/src/script/trigger.c` | `tests/unit/test_script_trigger.c` |
+| `game/src/script/vm.c` | `tests/unit/test_script_vm.c` |
 
 Además, `tests/unit/test_gen_data.c` prueba **los datos generados** en sí: que cada
 índice de texto/sprite que guarda un `PcObject` apunta a algo, que cada stream empieza en

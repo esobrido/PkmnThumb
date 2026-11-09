@@ -380,21 +380,260 @@ ANIM = {
 
 
 def map_objects(pc, map_name):
-    """object_event rows -> (x, y, SPRITE_NAME, facing, anim).
+    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, script).
 
     Coordinates are in 16x16 px tiles (the same grid the player walks on), not
     in 32px map blocks — an object_event y of 15 on a 9-block-tall map only fits
     that way. The movement type (`SPRITEMOVEDATA_*`) decides both the facing the
     NPC stands with and whether it animates in place.
+
+    `script` is how the object answers to A, in the original's two shapes:
+    (`label`, name) is an OBJECTTYPE_SCRIPT, a label of this same file, and
+    (`command`, macro, arg) is an OBJECTTYPE_COMMAND, which the engine runs as a
+    script of one command (`jumptextfaceplayer MyText`). None is an object with
+    no script: the null `ObjectEvent` field of a scene-only NPC.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
     out = []
-    pat = re.compile(r"^\s*object_event\s+(\d+)\s*,\s*(\d+)\s*,\s*(SPRITE_\w+)\s*,"
-                     r"\s*(SPRITEMOVEDATA_\w+)", re.M)
-    for m in pat.finditer(txt):
-        mv = m.group(4)
-        out.append((int(m.group(1)), int(m.group(2)), m.group(3),
-                    FACING.get(mv, 0), ANIM.get(mv, 0)))
+    for line in txt.splitlines():
+        m = re.match(r"^\s*object_event\s+(.+)$", line.split(";")[0])
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) < 11:
+            die("%s: object_event with %d fields: %r" % (map_name, len(a), line.strip()))
+        kind, spec = a[8], None
+        if kind == "OBJECTTYPE_SCRIPT":
+            if a[10] not in ("ObjectEvent", "0", "-1"):
+                spec = ("label", a[10])
+        elif kind == "OBJECTTYPE_COMMAND":
+            spec = ("command", a[9], a[10])
+        elif kind in ("OBJECTTYPE_ITEMBALL", "OBJECTTYPE_TRAINER",
+                      "OBJECTTYPE_GENERICTRAINER", "OBJECTTYPE_POKEMON"):
+            # Their script is not a label or a command but a record the game reads
+            # itself (the item, the trainer party); nothing to assemble yet.
+            print("object   %-18s %s not ported" % (map_name, kind))
+        else:
+            die("%s: unknown object type %r" % (map_name, kind))
+        out.append((int(a[0]), int(a[1]), a[2], FACING.get(a[3], 0),
+                    ANIM.get(a[3], 0), spec))
+    return out
+
+
+def std_scripts(pc, consts):
+    """engine/events/std_scripts.asm -> ({name: body}, [name in table order]).
+
+    `StdScripts::` is a table of `dw Name`, and the order *is* the numbering of
+    constants/std_constants.asm: a BGEVENT_JUMPSTD cell stores an index into it.
+    The port inlines the script the index names, so the byte only ever has to
+    make sense to the extractor, never to a pointer.
+    """
+    txt = read(os.path.join(pc, "engine", "events", "std_scripts.asm"))
+    blocks = dict(asm_label_blocks(txt.splitlines()))
+    order, in_table = [], False
+    for line in txt.splitlines():
+        s = line.split(";")[0].strip()
+        if not s:
+            continue
+        if s.startswith("StdScripts::"):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        m = re.match(r"^dw\s+(\w+)$", s)
+        if m:
+            order.append(m.group(1))
+            continue
+        in_table = False
+    if not order:
+        die("engine/events/std_scripts.asm: no StdScripts table found")
+    by_const = {}
+    for i, name in enumerate(order):
+        if name not in blocks:
+            die("engine/events/std_scripts.asm: %s is in the table but has no block"
+                % name)
+        short = re.sub(r"Script$", "", name).lower()
+        # The constants are the table's order; a `const` that disagrees means the
+        # two files drifted apart and every BGEVENT_JUMPSTD byte is off by one.
+        if short in consts and consts[short] != i:
+            die("constants/std_constants.asm: %s is %d, but it is entry %d of the table"
+                % (short, consts[short], i))
+        by_const[short] = blocks[name]
+    return by_const, [re.sub(r"Script$", "", n).lower() for n in order]
+
+
+def item_names(pc):
+    """data/items/names.asm -> [display name], indexed by item id.
+
+    `ItemNames::` is a `list_start` + `li "Park Ball"` list in item-id order
+    (constants/item_constants.asm), with blank lines between categories. The
+    count has to cover every id the extractor uses, or a hidden item would be
+    announced as a different one.
+    """
+    txt = map_build_text(read(os.path.join(pc, "data", "items", "names.asm")),
+                         "data/items/names.asm")
+    start = txt.find("ItemNames::")
+    if start < 0:
+        die("data/items/names.asm: no ItemNames label")
+    names = []
+    for line in txt[start:].splitlines()[1:]:
+        s = line.split(";")[0].strip()
+        if not s:
+            continue
+        m = re.match(r'^li\s+"(.*)"$', s)
+        if m:
+            names.append(m.group(1))
+        elif not s.startswith("list_"):
+            break
+    if not names:
+        die("data/items/names.asm: no `li` names under ItemNames")
+    return names
+
+
+_TEXT_FILE_CACHE = {}
+
+
+def text_file(pc, rel, charmap, keys):
+    """A plain-text file of `data/text` as {label: bytes}, cached."""
+    if rel in _TEXT_FILE_CACHE:
+        return _TEXT_FILE_CACHE[rel]
+    blocks = list(label_blocks(read(os.path.join(pc, rel))))
+    out = {}
+    for label, body in blocks:
+        head = next((l.strip() for l in body if l.strip()), "")
+        blk = parse_text_block(body, charmap, keys)
+        if blk is not None and re.match(r"text\b", head):
+            out[label] = blk
+    _TEXT_FILE_CACHE[rel] = out
+    return out
+
+
+def bg_event_texts(pc, bg_events, item_names_, std_blocks, charmap, keys):
+    """{text key: bytes} the bg_event cells of one map need.
+
+    Two kinds of bg_event print a text the map file does not hold:
+
+    - BGEVENT_JUMPSTD runs a std script, which lives in
+      engine/events/std_scripts.asm with its text in data/text/std_text.asm.
+      The text is loaded by the label the script jumps to, not by name.
+    - BGEVENT_ITEM is a hidden item: the engine falls into HiddenItemScript,
+      which prints `_FoundItemText` after filling wStringBuffer3 with the item's
+      name (`getitemname`). The port has no string buffer, so the name is
+      substituted into the same _FoundItemText here, once per item.
+    """
+    out = {}
+    for spec in bg_events:
+        spec = spec[3]
+        if spec is None:
+            continue
+        if spec[0] == "std":
+            for raw in std_blocks[spec[1]]:
+                s = raw.split(";")[0].strip()
+                m = re.match(r"^\w*text\w*\s+(\w+)$", s)
+                if not m:
+                    continue
+                label = m.group(1)
+                for rel in ("data/text/std_text.asm", "data/text/common.asm"):
+                    tables = text_file(pc, rel, charmap, keys)
+                    if label in tables:
+                        out[label] = tables[label]
+                        break
+                else:
+                    die("bg_event text %s is in neither std_text.asm nor common.asm"
+                        % label)
+            continue
+        if spec[0] != "item":
+            continue
+        _, item, flag, key = spec
+        if item >= len(item_names_):
+            die("item id %d has no name in data/items/names.asm" % item)
+        body = list(label_blocks(read(os.path.join(pc, "data/text/common.asm"))))
+        found = dict(body).get("_FoundItemText")
+        if found is None:
+            die("data/text/common.asm: no _FoundItemText")
+        blk = parse_text_block(found, charmap, keys,
+                               ram={"wStringBuffer3":
+                                    encode_text(item_names_[item], charmap, keys)})
+        if blk is None:
+            die("_FoundItemText is not plain text")
+        out[key] = blk
+    return out
+
+
+def map_bg_events(pc, map_name, consts, std_order):
+    """bg_event rows -> (x, y, kind, spec), in file order.
+
+    `bg_event x, y, FUNCTION, arg` is a cell that answers to A: a sign, a
+    bookshelf, a healing machine, a trash can. The engine looks it up by the
+    tile the player faces (`CheckFacingBGEvent`) after no object_event matched,
+    so these act as the second layer of "what is in front of me".
+
+    `spec` is what the port has to run:
+    - (`label`, name) for BGEVENT_READ and the four directional kinds: an
+      ordinary script of this same map file.
+    - (`text`, label) for BGEVENT_JUMPTEXT, where the engine builds the script
+      itself (`jumptext <pointer>`), so the port emits that same one-command
+      script instead of the text.
+    - (`std`, name) for BGEVENT_JUMPSTD: the std script is inlined as a region
+      of this map's blob, so no std table is needed at runtime.
+    - (`item`, item id, flag, text key) for a hidden item (BGEVENT_ITEM and up):
+      the type byte minus BGEVENT_ITEM is the item, the fourth field is the flag
+      that marks it taken, and the engine's HiddenItemScript text is built here.
+    - None for the kinds it cannot run yet: BGEVENT_IFSET/IFNOTSET keep a flag
+      in front of their pointer, and GrottoItem is a flag plus a location.
+    """
+    names = ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN", "BGEVENT_RIGHT",
+             "BGEVENT_LEFT", "BGEVENT_IFSET", "BGEVENT_IFNOTSET",
+             "BGEVENT_JUMPTEXT", "BGEVENT_JUMPSTD")
+    missing = [n for n in names if n not in consts]
+    if missing:
+        die("constants/script_constants.asm: no %s" % ", ".join(missing))
+    out = []
+    for line in map_source(pc, map_name).splitlines():
+        m = re.match(r"^\s*bg_event\s+(.+)$", line.split(";")[0])
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) < 4:
+            die("%s: bg_event with %d fields: %r" % (map_name, len(a), line.strip()))
+        kindtxt, item = a[2], ""
+        if kindtxt in consts:
+            kind = consts[kindtxt]
+            base = kindtxt
+        else:
+            # `BGEVENT_ITEM + POTION`: the item id is added to the type byte, and
+            # BGEVENT_ITEM itself is `DEF ... EQU NUM_BGEVENTS`, not a `const`.
+            head, _, tail = kindtxt.partition("+")
+            base, item = head.strip(), tail.strip()
+            first = consts.get(base)
+            if first is None and base == "BGEVENT_ITEM":
+                first = max(consts["BGEVENT_GROTTOITEM"], consts["BGEVENT_JUMPSTD"]) + 1
+            if not item or first is None or item not in consts:
+                die("%s: unknown bg event type %r" % (map_name, kindtxt))
+            kind = first + consts[item]
+        spec = None
+        if base == "BGEVENT_JUMPTEXT":
+            spec = ("text", a[3])
+        elif base == "BGEVENT_JUMPSTD":
+            if len(a) > 4:
+                # `treegrotto, HIDDENGROTTO_X`: the std script takes an argument,
+                # which the engine passes through the script variable.
+                raise Unsupported("%s: JUMPSTD with an argument (%s)"
+                                  % (map_name, ", ".join(a[3:])))
+            if a[3] not in std_order:
+                die("%s: %r is not in StdScripts" % (map_name, a[3]))
+            spec = ("std", a[3])
+        elif base in ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN",
+                      "BGEVENT_RIGHT", "BGEVENT_LEFT"):
+            spec = ("label", a[3])
+        elif base == "BGEVENT_ITEM":
+            if item not in consts or a[3] not in consts:
+                die("%s: hidden item %r needs an item id and a flag in the constants"
+                    % (map_name, kindtxt))
+            spec = ("item", consts[item], consts[a[3]], "_FoundItemText_" + item)
+        else:
+            print("bg       %-18s %d,%d %s not ported" % (map_name, int(a[0]), int(a[1]), base))
+        out.append((int(a[0]), int(a[1]), kind, spec))
     return out
 
 
@@ -451,32 +690,101 @@ def encode_text(s, charmap, keys):
     return out
 
 
+# The port is a normal build of the original: `make` defaults to DEBUG=0 and
+# FAITHFUL=0. Map files put a whole scene (and its texts) behind
+# `if DEF(DEBUG)`/`if !DEF(DEBUG)`, so the other branch has to be dropped here.
+BUILD_FLAGS = {"DEBUG": False, "FAITHFUL": False}
+
+
+def _def_cond(expr, where):
+    m = re.match(r"(!?)DEF\((\w+)\)$", expr.strip())
+    if not m:
+        die("%s: unsupported build condition %r" % (where, expr))
+    if m.group(2) not in BUILD_FLAGS:
+        die("%s: unknown build flag %s" % (where, m.group(2)))
+    return BUILD_FLAGS[m.group(2)] != bool(m.group(1))
+
+
+def map_build_text(txt, where):
+    """The lines a release build assembles: `if`/`elif`/`else`/`endc` resolved."""
+    out, stack, active = [], [], True
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        if re.match(r"if\s", code):
+            parent = active
+            active = parent and _def_cond(code[2:], where)
+            stack.append([parent, active])
+            continue
+        if re.match(r"elif\s", code):
+            if not stack:
+                die("%s: `elif` without `if`" % where)
+            parent, taken = stack[-1]
+            active = parent and not taken and _def_cond(code[4:], where)
+            stack[-1][1] = taken or active
+            continue
+        if code == "else":
+            if not stack:
+                die("%s: `else` without `if`" % where)
+            parent, taken = stack[-1]
+            active = parent and not taken
+            stack[-1][1] = True
+            continue
+        if code == "endc":
+            if not stack:
+                die("%s: `endc` without `if`" % where)
+            active = stack.pop()[0]
+            continue
+        if active:
+            out.append(line)
+    if stack:
+        die("%s: unclosed `if`" % where)
+    return "\n".join(out)
+
+
+def map_source(pc, map_name):
+    """A map's .asm with the build-time conditionals already resolved."""
+    return map_build_text(read(os.path.join(pc, "maps", map_name + ".asm")), map_name)
+
+
 def label_blocks(txt):
-    """Yield (label, body lines) for every top-level `Label:` in an asm file."""
+    """Yield (label, body lines) for every top-level `Label:` in an asm file.
+
+    `::` is a global label: data/text uses it for the texts other files reach,
+    which is exactly the `_FoundItemText` of a hidden item.
+    """
     lines = txt.splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"^([A-Za-z_]\w*):\s*$", line)
+        m = re.match(r"^([A-Za-z_]\w*)::?\s*$", line)
         if not m:
             continue
         body = []
         for nxt in lines[i + 1:]:
-            if re.match(r"^[A-Za-z_]\w*:\s*$", nxt):
+            if re.match(r"^[A-Za-z_]\w*::?\s*$", nxt):
                 break
             body.append(nxt)
         yield m.group(1), body
 
 
-def parse_text_block(body, charmap, keys):
+def parse_text_block(body, charmap, keys, ram=None):
     """`text "..."/line/para/done` -> bytes, or None if it is not plain text.
 
-    text_far/text_asm/text_ram/text_decimal hand control to something else (a
-    text in another file, or code). Those are phase 2 work; skipping them keeps
-    the extractor honest instead of emitting half a line.
+    text_far/text_asm/text_decimal hand control to something else (a text in
+    another file, or code). Those are phase 2 work; skipping them keeps the
+    extractor honest instead of emitting half a line.
+
+    `text_ram` prints a buffer the script has just filled. The port has no string
+    buffer, so the caller may pass `ram` — {buffer name: glyph bytes} — and the
+    bytes are written here as if they had been the line's text.
     """
     out = bytearray()
+    started = False
     for raw in body:
         s = raw.strip()
         if not s or s.startswith(";"):
+            continue
+        m = re.match(r"text_ram\s+(\w+)$", s)
+        if m and ram and m.group(1) in ram:
+            out += ram[m.group(1)]
             continue
         m = re.match(r"(text|next1|next|line|cont|para|done|prompt)(?:\s+(.*))?$", s)
         if not m:
@@ -485,7 +793,12 @@ def parse_text_block(body, charmap, keys):
                 return None
             return None
         op, arg = m.group(1), (m.group(2) or "").strip()
-        out.append(TEXT_MACRO[op])
+        # `<START>` goes out once, at the block's first `text`; a later `text`
+        # only adds characters (macros/scripts/text.asm, `_dtxt`'s compressible
+        # branch). A hidden item's _FoundItemText is the case that shows it.
+        if op != "text" or not started:
+            out.append(TEXT_MACRO[op])
+        started = True
         if op in ("done", "prompt"):
             return bytes(out)
         if arg:
@@ -497,23 +810,69 @@ def parse_text_block(body, charmap, keys):
     return None if not out else bytes(out) + b"\x52"
 
 
+# `jumpthistext` and its two siblings print "the text where the script is
+# standing", which is either the block that follows inside the same script or,
+# when the command is the script's last line (`jumpthisopenedtext` often is), the
+# text label that comes next in the file.
+INLINE_TEXT = ("jumpthistext", "jumpthistextfaceplayer", "jumpthisopenedtext")
+
+
+def inline_keys(map_name, blocks):
+    """{script label: [(text key, inline_here), ...]} in script order.
+
+    `inline_here` is True when the text follows the command inside the same
+    block, so its bytes have to be pulled out of `pc_texts` under a made-up name;
+    otherwise the key is the label that comes next, which is already a text.
+    """
+    out = {}
+    for i, (label, body) in enumerate(blocks):
+        n = 0
+        for j, raw in enumerate(body):
+            if raw.split(";")[0].strip() not in INLINE_TEXT:
+                continue
+            rest = [l for l in body[j + 1:] if l.split(";")[0].strip()]
+            if rest:
+                key = "%s_%s_inline%s" % (map_name, label,
+                                          "" if n == 0 else str(n + 1))
+            else:
+                key = blocks[i + 1][0] if i + 1 < len(blocks) else None
+            out.setdefault(label, []).append((key, bool(rest)))
+            n += 1
+    return out
+
+
 def map_texts(pc, map_name, charmap, keys):
     """Every plain-text label in a map, in file order: {label: bytes}.
 
     The map file holds the NPC scripts and their text; `text_far` and friends are
     skipped (they live elsewhere). Order is kept because the generated table is
-    read side by side with the .asm by a human.
+    read side by side with the .asm by a human. The texts a script prints inline
+    (`jumpthistext`) have no label of their own, so they are named here too.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
+    blocks = list(label_blocks(txt))
     out = {}
-    for label, body in label_blocks(txt):
+    for label, body in blocks:
         blk = parse_text_block(body, charmap, keys)
-        if blk is None:
-            continue
-        head = next((l.strip() for l in body if l.strip()), "")
-        if not re.match(r"text\b", head):
-            continue
-        out[label] = blk
+        if blk is not None:
+            head = next((l.strip() for l in body if l.strip()), "")
+            if re.match(r"text\b", head):
+                out[label] = blk
+    for label, keys_in in inline_keys(map_name, blocks).items():
+        body = dict(blocks)[label]
+        n = 0
+        for j, raw in enumerate(body):
+            if raw.split(";")[0].strip() not in INLINE_TEXT:
+                continue
+            key, here = keys_in[n]
+            n += 1
+            if not here:
+                continue
+            blk = parse_text_block(body[j + 1:], charmap, keys)
+            if blk is None:
+                die("%s.%s: inline text after %s is not plain text"
+                    % (map_name, label, raw.strip()))
+            out[key] = blk
     return out
 
 
@@ -555,14 +914,15 @@ def first_text_ref(texts, script, blocks, charmap, keys, map_name):
     body = blocks.get(script)
     if body is None:
         return None
-    for i, raw in enumerate(body):
+    blocks_list = list(blocks.items())
+    for raw in body:
         m = re.match(r"\s*(?:if\w+_)?(showtext|writetext|jumptext\w*)\s+(\w+)", raw)
         if m and m.group(2) in texts:
             return (m.group(2), texts[m.group(2)])
-        if re.match(r"\s*jumpthistext\w*\s*$", raw):
-            blk = parse_text_block(body[i + 1:], charmap, keys)
-            if blk is not None:
-                return ("%s_%s_inline" % (map_name, script), blk)
+    keys_in = inline_keys(map_name, blocks_list)
+    for key, _ in keys_in.get(script, []):
+        if key in texts:
+            return (key, texts[key])
     return None
 
 
@@ -575,7 +935,7 @@ def map_object_texts(pc, map_name, texts, charmap, keys):
     index of the object_event here matches the order map_objects() emits, which
     is what PcObject.text indexes.
     """
-    txt = read(os.path.join(pc, "maps", map_name + ".asm"))
+    txt = map_source(pc, map_name)
     blocks = dict(label_blocks(txt))
     out = []
     for line in txt.splitlines():
@@ -956,6 +1316,668 @@ def emit_text(path, texts, pc):
         f.write("};\n\n#endif\n")
 
 
+def script_defs(pc):
+    """Everything the map scripts need that lives outside a map file.
+
+    `opcodes` is the `const X_command` sequence of `macros/scripts/events.asm`
+    (the same order as RunScriptCommand's jump table, so index == opcode),
+    `macros` are those macro bodies, `movement` the names that belong to
+    movement data (not scripts), `specials` the index of each entry of
+    SpecialsPointers, and `consts` every `const`/`DEF ... EQU n` under
+    constants/ plus the map groups. Nothing here is retyped by hand.
+    """
+    txt = read(os.path.join(pc, "macros/scripts/events.asm")).splitlines()
+    opcodes, macros = [], {}
+    n, i = 0, 0
+    while i < len(txt):
+        line = txt[i].strip()
+        m = re.match(r"const_def\s*(\d+)?", line)
+        if m:
+            n = int(m.group(1) or 0)
+            i += 1
+            continue
+        m = re.match(r"const\s+(\w+)", line)
+        if m:
+            if m.group(1) != "_skip":
+                opcodes.append((m.group(1), n))
+            n += 1
+            i += 1
+            continue
+        m = re.match(r"MACRO\s+(\w+)", line)
+        if m:
+            body = []
+            i += 1
+            while i < len(txt) and txt[i].strip() != "ENDM":
+                body.append(txt[i])
+                i += 1
+            i += 1
+            macros[m.group(1)] = body
+            continue
+        i += 1
+    if len(opcodes) < 200:
+        die("events.asm: only %d script opcodes found" % len(opcodes))
+
+    movement = set()
+    for line in read(os.path.join(pc, "macros/scripts/movement.asm")).splitlines():
+        m = re.match(r"MACRO\s+(\w+)", line.strip())
+        if m:
+            movement.add(m.group(1))
+
+    # Text macros end a script block: the strings sit right after `end` in the
+    # same label, and map_texts has already extracted them.
+    text_macros = set()
+    for line in read(os.path.join(pc, "macros/scripts/text.asm")).splitlines():
+        m = re.match(r"MACRO\s+(\w+)", line.strip())
+        if m:
+            text_macros.add(m.group(1))
+
+    specials = {}
+    for line in read(os.path.join(pc, "data/events/special_pointers.asm")).splitlines():
+        m = re.match(r"\s*add_special\s+(\w+)", line)
+        if m:
+            specials[m.group(1)] = len(specials)
+
+    consts = {name: code for name, code in opcodes}
+    for path in sorted(glob.glob(os.path.join(pc, "constants", "*.asm"))):
+        n = 0
+        for line in read(path).splitlines():
+            s = line.split(";")[0].strip()
+            m = re.match(r"const_def\s*(-?\d+)?$", s)
+            if m:
+                n = int(m.group(1) or 0)
+                continue
+            m = re.match(r"const\s+(\w+)\s*(?:=\s*(\d+))?$", s)
+            if m:
+                if m.group(1) != "_skip":
+                    consts.setdefault(m.group(1),
+                                      int(m.group(2)) if m.group(2) else n)
+                n += 1
+                continue
+            m = re.match(r"const_skip\s*(\d+)?$", s)
+            if m:
+                n += int(m.group(1) or 1)
+                continue
+            m = re.match(r"(?:DEF\s+)?(\w+)\s+EQU\s+(-?\d+|\$[0-9a-fA-F]+)$", s)
+            if m:
+                v = m.group(2)
+                consts.setdefault(m.group(1), int(v[1:], 16) if v[0] == "$" else int(v))
+    if len(consts) < 1000:
+        die("constants: only %d values found" % len(consts))
+
+    group, order = -1, 0
+    for line in read(os.path.join(pc, "constants/map_constants.asm")).splitlines():
+        s = line.split(";")[0].strip()
+        if re.match(r"newgroup$", s):
+            group += 1
+            order = 0
+            continue
+        m = re.match(r"map_const\s+(\w+)", s)
+        if m:
+            consts["GROUP_" + m.group(1)] = group
+            consts["MAP_" + m.group(1)] = order
+            order += 1
+    return {"opcodes": opcodes, "macros": macros, "movement": movement,
+            "text": text_macros, "specials": specials, "consts": consts}
+
+
+def asm_label_blocks(txt):
+    """(label, lines) for `Name:` and bare-`Name` labels (RGBDS allows both)."""
+    cur, body = None, []
+    for line in txt:
+        m = re.match(r"^(\w+):\s*(?:;.*)?$", line.rstrip())
+        if not m:
+            m = re.match(r"^(\w+)$", line.rstrip())
+        if m:
+            if cur is not None:
+                yield cur, body
+            cur, body = m.group(1), []
+            continue
+        if cur is not None:
+            body.append(line)
+    if cur is not None:
+        yield cur, body
+
+
+class Unsupported(Exception):
+    """A macro this extractor cannot assemble yet (nested code fragments)."""
+
+
+def _compare(op, a, b):
+    return {"==": a == b, "!=": a != b, ">=": a >= b,
+            "<=": a <= b, ">": a > b, "<": a < b}[op]
+
+
+def script_sizes(defs, name, args):
+    """Bytes one script macro emits, as [(value | symbol, width)].
+
+    The relative forms (`sjumpfwd`, `iftruefwd`, `iffalsefwd`, `ifequalfwd`) are
+    rewritten to their absolute twins: they exist only to save bytes, and a
+    distance measured from the operand is one more thing to get wrong.
+    """
+    if name.endswith("fwd") and name[:-3] in defs["macros"]:
+        name = name[:-3]
+    out = []
+    # `\#` is "the arguments `shift` has not eaten yet", so a macro that takes
+    # an item plus a fail-safe handler (`giveitem POTION, .full`) is a call to a
+    # byte-emitting twin followed by the remaining arguments as script code.
+    args = list(args)
+    first = 0
+    def arg(mo):
+        i = first + int(mo.group(1)) - 1
+        if i >= len(args):
+            raise Unsupported("%s: argument %d missing" % (name, i + 1))
+        return args[i]
+
+    def cond(expr):
+        """`_NARG == 2`, `\1 == 0`: both sides are numbers or `_NARG`."""
+        expr = re.sub(r"\\(\d)", arg, expr).strip()
+        m = re.match(r"(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$", expr)
+        if not m:
+            raise Unsupported("%s: cannot evaluate %r" % (name, expr))
+
+        def val(s):
+            s = s.strip()
+            return len(args) - first if s == "_NARG" else _number(s, defs)
+        return _compare(m.group(2), val(m.group(1)), val(m.group(3)))
+
+    # `if` guards matter because both branches are emitted otherwise, and one
+    # of them then references an argument that is not there. `elif` is real in
+    # `pokepic`/`cry` (`if \1 == 0` ... `elif _NARG == 2`).
+    active, stack = True, []
+    for line in defs["macros"][name]:
+        code = line.split(";")[0].strip()
+        if (not code or code.startswith("assert")
+                or code.startswith("rept") or code.startswith("endr")):
+            continue
+        m = re.match(r"shift\s*(\d+)?$", code)
+        if m:
+            first = min(first + int(m.group(1) or 1), len(args))
+            continue
+        m = re.match(r"if\s+(.*)$", code)
+        if m:
+            parent = active
+            active = parent and cond(m.group(1))
+            stack.append({"parent": parent, "taken": active})
+            continue
+        m = re.match(r"elif\s+(.*)$", code)
+        if m:
+            if not stack:
+                die("script macro %s: `elif` without `if`" % name)
+            top = stack[-1]
+            active = top["parent"] and not top["taken"] and cond(m.group(1))
+            top["taken"] = top["taken"] or active
+            continue
+        if re.match(r"else$", code):
+            if not stack:
+                die("script macro %s: `else` without `if`" % name)
+            top = stack[-1]
+            active = top["parent"] and not top["taken"]
+            top["taken"] = True
+            continue
+        if re.match(r"endc$", code):
+            if not stack:
+                die("script macro %s: `endc` without `if`" % name)
+            active = stack.pop()["parent"]
+            continue
+        if not active:
+            continue
+
+        if code == "\\#":
+            # The rest of the arguments *are* script code, one command each.
+            for frag in args[first:]:
+                head = frag.split(None, 1)[0]
+                if head not in defs["macros"]:
+                    raise Unsupported("%s: %r is not a script command" % (name, frag))
+                rest = frag.split(None, 1)[1] if len(frag.split(None, 1)) > 1 else ""
+                out += script_sizes(defs, head, split_args(rest))
+            continue
+
+        m = re.match(r"(db|dp|dw|dba|dr|map_id)\s+(.*)$", code)
+        if not m:
+            # a nested macro call (`giveitem_unsafe` -> `giveitems_unsafe`)
+            head = code.split(None, 1)[0]
+            if head in defs["macros"]:
+                inner = code.split(None, 1)[1] if len(code.split(None, 1)) > 1 else ""
+                out += script_sizes(defs, head,
+                                    split_args(re.sub(r"\\(\d)", arg, inner)))
+                continue
+            raise Unsupported("%s: cannot assemble %r" % (name, code))
+        kind, expr = m.group(1), m.group(2).strip()
+        expr = re.sub(r"\\(\d)", arg, expr.replace("\\#", ", ".join(args[first:])))
+        if "\\" in expr:
+            raise Unsupported("%s: cannot expand %r" % (name, expr))
+        if kind == "map_id":
+            out += [("GROUP_" + expr, 1), ("MAP_" + expr, 1)]
+            continue
+        m = re.match(r"^\((\w+)Special\s*-\s*SpecialsPointers\)\s*/\s*3$", expr)
+        if m:
+            if m.group(1) not in defs["specials"]:
+                die("special %s: not in SpecialsPointers" % m.group(1))
+            out.append((defs["specials"][m.group(1)], 1))
+            continue
+        if kind == "dp":
+            # macros/data.asm: `dp species, form` is LOW(species) and
+            # HIGH(species) << MON_EXTSPECIES_F | form, not two loose bytes.
+            vals = split_args(expr)
+            if not 1 <= len(vals) <= 2:
+                die("%s.dp: %d arguments" % (name, len(vals)))
+            species = _number(vals[0], defs)
+            form = _number(vals[1], defs) if len(vals) == 2 else \
+                defs["consts"]["PLAIN_FORM"]
+            flag = defs["consts"]["MON_EXTSPECIES_F"]
+            high = ((species >> 8) << flag) | form
+            out.append((species & 0xff, 1))
+            out.append((high & 0xff, 1))
+            continue
+        width = {"db": 1, "dw": 2, "dba": 3, "dr": 2}[kind]
+        if re.fullmatch(r"-?\d+", expr):
+            out.append((int(expr), width))
+        elif expr in defs["consts"]:
+            out.append((defs["consts"][expr], width))
+        else:
+            n = const_expr(expr, defs["consts"])
+            out.append((n if n is not None else expr, width))
+    return out
+
+
+def _number(sym, defs):
+    """A literal, a known constant or simple arithmetic; dies if it is neither."""
+    if re.fullmatch(r"-?\d+", sym):
+        return int(sym)
+    if sym in defs["consts"]:
+        return defs["consts"][sym]
+    n = const_expr(sym, defs["consts"])
+    if n is None:
+        die("script data: cannot evaluate %r" % sym)
+    return n
+
+
+def const_expr(expr, consts):
+    """`(1 << MORN) | (1 << DAY)` -> a number, or None if it is not arithmetic.
+
+    Only shifts, ors and the constants themselves are allowed: if the string is
+    a symbol or anything else, the caller keeps it as a name.
+    """
+    if not re.fullmatch(r"[-\w\s()<>|+*/&]+$", expr):
+        return None
+    names = set(re.findall(r"[A-Za-z_]\w*", expr))
+    if not names or not names <= set(consts):
+        return None
+    try:
+        return int(eval(expr.replace("$", "0x"),  # noqa: S307 - digits and consts only
+                        {"__builtins__": {}},
+                        {n: consts[n] for n in names}))
+    except Exception:
+        return None
+
+
+def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
+                std_blocks=None):
+    """Assemble every script label of a map into one blob.
+
+    Each entry point gets its own region, so a script can be run from its
+    offset without knowing the map's layout. In-file jumps resolve to offsets
+    in the blob; a pointer to a text becomes an index into `pc_texts`, because
+    the port has no ROM addresses. Anything else (movement data, another map's
+    script) becomes $FFFF and is reported, not silently zeroed.
+
+    `obj_specs` are the objects' scripts (see map_objects). An OBJECTTYPE_COMMAND
+    becomes a one-command tail of the same blob, which is exactly what the engine
+    does with it (it copies the field into wScriptPointer and runs it), so every
+    object ends up pointing at a script offset and nowhere else.
+
+    `bg_events` are the bg_event cells (see map_bg_events), appended after the
+    objects for the same reason. BGEVENT_JUMPTEXT is the same trick as an
+    OBJECTTYPE_COMMAND: the engine builds `jumptext <text>` and runs it, so the
+    port emits those three bytes instead of the text.
+
+    `std_blocks` are engine/events/std_scripts.asm's scripts (see
+    std_scripts): a BGEVENT_JUMPSTD cell gets its std script assembled into the
+    blob as one more region, and a hidden item gets the two commands the
+    engine's HiddenItemScript reduces to here (`opentext` then `jumptext`; the
+    item and the flag are handled by the game, which sees them in PcBgEvent).
+    """
+    stats = {"event": -1, "flag": -1}
+    blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
+    header = next((body for label, body in blocks if label.endswith("_MapScriptHeader")), [])
+
+    objects, scenes, n = {}, {}, 0
+    for line in header:
+        m = re.match(r"\s*const\s+(\w+)", line)
+        if m:
+            n += 1
+            objects[m.group(1)] = n
+            continue
+        m = re.match(r"\s*scene_const\s+(\w+)", line)
+        if m:
+            scenes[m.group(1)] = len(scenes)
+    consts = dict(defs["consts"])
+    consts.update(scenes)
+
+    def is_script(body):
+        for line in body:
+            s = line.split(";")[0].strip()
+            if not s:
+                continue
+            name = s.split()[0]
+            return name in defs["macros"] and name not in defs["movement"]
+        return False
+
+    scripts = [(label, body) for label, body in blocks if is_script(body)]
+    ikeys = inline_keys(map_name, blocks)
+    if not scripts and not any(spec for spec in obj_specs) and not any(e[3] for e in bg_events):
+        raise Unsupported("no script labels in the map file")
+
+    def assemble(label, body, labels, locals_rel):
+        """One script block.
+
+        `locals_rel` maps `.label` -> offset inside the block. Two passes are
+        unavoidable: a script jumps forward over its own `.foo` labels, so a
+        single pass would see them as unknown.
+        """
+        out, extern = [], set()
+
+        def value(sym):
+            if sym.startswith("."):
+                key = label + sym
+                if key in locals_rel:
+                    return labels.get(label, 0) + locals_rel[key]
+                extern.add(sym)
+                return None
+            if sym in labels:
+                return labels[sym]
+            if sym in text_index:
+                return text_index[sym]
+            if sym in objects:
+                return objects[sym]
+            if sym in consts:
+                return consts[sym]
+            extern.add(sym)
+            return None
+
+        skipping = False
+        inline_n = 0
+        i = 0
+        while i < len(body):
+            line = body[i]
+            i += 1
+            s = line.split(";")[0].strip()
+            if not s:
+                continue
+            m = re.match(r"^(\.\w+):?$", s)
+            if m:
+                if not skipping:
+                    locals_rel[label + m.group(1).rstrip(":")] = len(out)
+                else:
+                    skipping = False
+                    locals_rel[label + m.group(1).rstrip(":")] = len(out)
+                continue
+            if skipping:
+                continue
+            parts = s.split(None, 1)
+            if parts[0] in defs["text"] or parts[0] in defs["movement"]:
+                # Data, not code: text strings or movement steps can sit inside a
+                # script label, and both have their own extractor. Skip to the
+                # next label, which is a script again.
+                skipping = True
+                continue
+            m = re.match(r"(db|dw)\s+(.*)$", s)
+            if m:
+                # A `scalltable` jump table: `dw Script1`, `dw Script2` in file
+                # order. Its entries are script offsets, so they resolve the
+                # same way a `sjump` target does.
+                width = 1 if m.group(1) == "db" else 2
+                for sym in split_args(m.group(2)):
+                    v = value(sym.strip())
+                    if v is None:
+                        out += [0xff] * width
+                        continue
+                    out += [v & 0xff, (v >> 8) & 0xff][:width]
+                continue
+            if parts[0] not in defs["macros"]:
+                die("%s.%s: %r is not a script macro" % (map_name, label, s))
+            if parts[0] in INLINE_TEXT:
+                # These print "the text where the script is": an index like any
+                # other command's, except the extractor is the one that knows
+                # which text that is (see inline_keys).
+                for val, width in script_sizes(defs, parts[0], []):
+                    out += [val & 0xff, (val >> 8) & 0xff][:width]
+                refs = ikeys.get(label, [])
+                if inline_n >= len(refs) or not refs[inline_n][0]:
+                    die("%s.%s: no text after %s" % (map_name, label, parts[0]))
+                key, here = refs[inline_n]
+                inline_n += 1
+                v = value(key)
+                if v is None:
+                    die("%s.%s: %s prints %s, which is not a text"
+                        % (map_name, label, parts[0], key))
+                out += [v & 0xff, (v >> 8) & 0xff]
+                if here:
+                    # Skip exactly those bytes, up to their `done`: the next line
+                    # may be another command, not more text.
+                    while i < len(body):
+                        head = body[i].split(";")[0].strip().split(None, 1)
+                        i += 1
+                        if head and head[0] in ("done", "prompt"):
+                            break
+                continue
+            if parts[0] == "farjumptext":
+                # There are no banks in the port: a far text pointer and a near
+                # one are both an index into pc_texts, so one opcode serves both.
+                parts[0] = "jumptext"
+            args = split_args(parts[1]) if len(parts) > 1 else []
+            # How many bits of flag/event state the whole build has to hold: the
+            # VM shares one bit array, so the largest index wins.
+            key = {"checkevent": "event", "setevent": "event",
+                   "clearevent": "event", "checkflag": "flag",
+                   "setflag": "flag", "clearflag": "flag"}.get(parts[0])
+            if key and args:
+                v = value(args[0].strip())
+                if isinstance(v, int):
+                    stats[key] = max(stats[key], v)
+                else:
+                    extern.discard(args[0].strip())
+            for val, width in script_sizes(defs, parts[0], args):
+                if not isinstance(val, str):
+                    out += [val & 0xff, (val >> 8) & 0xff][:width]
+                    continue
+                v = value(val)
+                if v is None:
+                    out += [0xff] * width
+                    continue
+                if width == 1:
+                    out.append(v & 0xff)
+                else:
+                    out += [v & 0xff, (v >> 8) & 0xff][:width]
+        return out, extern
+
+    sizes, locals_rel, off = {}, {}, 0
+    for label, body in scripts:
+        locals_rel[label] = {}
+        try:
+            sizes[label] = len(assemble(label, body, {}, locals_rel[label])[0])
+        except Unsupported as exc:
+            raise Unsupported("%s: %s" % (label, exc))
+    labels = {}
+    for label, _ in scripts:
+        labels[label] = off
+        off += sizes[label]
+
+    blob, extern = [], set()
+    for label, body in scripts:
+        data, ext = assemble(label, body, labels, locals_rel[label])
+        if len(data) != sizes[label]:
+            die("%s.%s: size changed between passes (%d != %d)"
+                % (map_name, label, len(data), sizes[label]))
+        blob += data
+        extern |= ext
+
+    # The objects last, so every label offset above keeps its value: an object's
+    # script is a one-command region appended after the last script.
+    obj_offsets, missing = [], []
+    for i, spec in enumerate(obj_specs):
+        if spec is None:
+            obj_offsets.append(0xffff)
+            continue
+        if spec[0] == "label":
+            if spec[1] not in labels:
+                missing.append(spec[1])
+                obj_offsets.append(0xffff)
+                continue
+            obj_offsets.append(labels[spec[1]])
+            continue
+        _, macro, arg = spec
+        name = "_obj%d" % i
+        data, ext = assemble(name, ["%s %s" % (macro, arg)], labels, {})
+        obj_offsets.append(len(blob))
+        blob += data
+        extern |= ext
+    # And then the bg_event cells, in the same blob: a sign's script is an offset
+    # of the same map, a jump-text sign is a three byte script of its own, and a
+    # bookshelf's std script is copied in whole.
+    bg_offsets, bg_flags = [], []
+    jump = dict(defs["opcodes"])["jumptext_command"]
+    for i, (_, _, _, spec) in enumerate(bg_events):
+        if spec is None:
+            bg_offsets.append(0xffff)
+            bg_flags.append(0xffff)
+            continue
+        kind = spec[0]
+        if kind == "label":
+            if spec[1] not in labels:
+                missing.append(spec[1])
+                bg_offsets.append(0xffff)
+            else:
+                bg_offsets.append(labels[spec[1]])
+            bg_flags.append(0xffff)
+            continue
+        if kind == "text":
+            if spec[1] not in text_index:
+                missing.append(spec[1])
+                bg_offsets.append(0xffff)
+                bg_flags.append(0xffff)
+                continue
+            t = text_index[spec[1]]
+            bg_offsets.append(len(blob))
+            bg_flags.append(0xffff)
+            blob += [jump, t & 0xff, (t >> 8) & 0xff]
+            continue
+        if kind == "std":
+            if spec[1] not in (std_blocks or {}):
+                die("%s: std script %s is not in engine/events/std_scripts.asm"
+                    % (map_name, spec[1]))
+            data, ext = assemble("%s_std%d" % (map_name, i), std_blocks[spec[1]],
+                                 labels, {})
+            bg_offsets.append(len(blob))
+            bg_flags.append(0xffff)
+            blob += data
+            extern |= ext
+            continue
+        # A hidden item: the game gives the item and sets the flag before it
+        # runs this, so the script is only the message.
+        _, item, flag, key = spec
+        # game.c writes this flag, so the shared bit array has to hold it.
+        stats["flag"] = max(stats["flag"], flag)
+        data, ext = assemble("%s_item%d" % (map_name, i),
+                             ["opentext", "jumptext %s" % key], labels, {})
+        bg_offsets.append(len(blob))
+        bg_flags.append(flag)
+        blob += data
+        extern |= ext
+    if missing:
+        print("scripts   %-22s script(s) not in this file: %s"
+              % (map_name, ", ".join(missing)))
+    return {"labels": labels, "bytes": bytes(blob), "extern": sorted(extern),
+            "objects": obj_offsets, "bg": bg_offsets, "bg_flags": bg_flags,
+            "bg_events": bg_events, "stats": stats,
+            "locals": sum(len(v) for v in locals_rel.values())}
+
+
+def emit_scripts(path, per_map, defs, text_index, consts):
+    """One header with the opcode names, the blobs and the label offsets."""
+    with open(path, "w") as f:
+        f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
+        f.write("#ifndef PC_GEN_SCRIPTS_H\n#define PC_GEN_SCRIPTS_H\n#include <stdint.h>\n\n")
+        f.write("/* opcodes: the `const *_command` order of macros/scripts/events.asm */\n")
+        for name, code in defs["opcodes"]:
+            f.write("#define PCS_%-26s 0x%02x\n" % (name[:-len("_command")].upper(), code))
+        f.write("/* bg_event types, in the original's order (constants/script_constants.asm) */\n")
+        for name in ("BGEVENT_READ", "BGEVENT_UP", "BGEVENT_DOWN", "BGEVENT_RIGHT",
+                     "BGEVENT_LEFT", "BGEVENT_IFSET", "BGEVENT_IFNOTSET",
+                     "BGEVENT_JUMPTEXT", "BGEVENT_JUMPSTD", "BGEVENT_GROTTOITEM"):
+            if name not in consts:
+                die("constants/script_constants.asm: no %s" % name)
+            f.write("#define PC_%s %d\n" % (name, consts[name]))
+        item_base = max(consts["BGEVENT_GROTTOITEM"], consts["BGEVENT_JUMPSTD"]) + 1
+        f.write("/* hidden item: `kind - PC_BGEVENT_ITEM` is the item id */\n")
+        f.write("#define PC_BGEVENT_ITEM %d\n" % item_base)
+        f.write("\n/* text pointers inside a script are indexes into pc_texts, not addresses */\n")
+        f.write("#define PCS_TEXT_INDEX_COUNT %d\n" % len(text_index))
+        f.write("#define PCS_EXTERN 0xffff\n\n")
+        # Engine flags and map events share one bit array in the VM, so the size
+        # is the largest index any assembled script touches, plus one.
+        top = max([1] + [d["stats"][k] + 1 for _, d in per_map
+                         for k in ("event", "flag")])
+        f.write("/* bits of flag/event state the scripts of this build use */\n")
+        f.write("#define PC_SCRIPT_FLAG_BYTES %d\n\n" % ((top + 7) // 8))
+        for i, (map_name, data) in enumerate(per_map):
+            f.write("static const uint8_t scr%d_%s[%d] = {\n" % (i, map_name, len(data["bytes"])))
+            for j in range(0, len(data["bytes"]), 16):
+                f.write("\t" + ",".join("0x%02x" % b for b in data["bytes"][j:j + 16]) + ",\n")
+            f.write("};\n\n")
+        f.write("typedef struct { const char *label; uint16_t offset; } PcScriptLabel;\n")
+        f.write("/* A bg_event: the cell (x, y) answers to A. `kind` is the original's\n"
+                " * BGEVENT_* type byte; READ, the four directional kinds, JUMPTEXT,\n"
+                " * JUMPSTD and the hidden items have a script here ($ffff otherwise).\n"
+                " * `flag` hides a hidden item once it has been taken ($ffff: none),\n"
+                " * which is the test BGEVENT_ITEM does before it reads. */\n")
+        f.write("typedef struct { uint8_t x, y, kind; uint16_t script;\n"
+                "    uint16_t flag; } PcBgEvent;\n")
+        f.write("/* map_index is the position in pc_maps, so the game can find a map's\n"
+                " * bytecode by the map it loaded. objects[] is one script offset per\n"
+                " * object_event, bg[] one per bg_event, $ffff when there is none. */\n")
+        f.write("typedef struct { const char *map; int8_t map_index; const uint8_t *bytes;\n"
+                "    uint16_t len; const PcScriptLabel *labels; uint16_t label_count;\n"
+                "    const uint16_t *objects; uint8_t object_count;\n"
+                "    const PcBgEvent *bg; uint8_t bg_count; } PcScriptMap;\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            f.write("static const PcScriptLabel scr%d_labels[%d] = {\n"
+                    % (i, len(data["labels"])))
+            for label, off in data["labels"].items():
+                f.write('\t{ "%s", %d },\n' % (label, off))
+            f.write("};\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            if not data["objects"]:
+                continue
+            f.write("static const uint16_t scr%d_objects[%d] = {\n"
+                    % (i, len(data["objects"])))
+            for j in range(0, len(data["objects"]), 8):
+                f.write("\t" + ",".join("%5d" % o if o != 0xffff else "0xffff"
+                                       for o in data["objects"][j:j + 8]) + ",\n")
+            f.write("};\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            if not data["bg"]:
+                continue
+            f.write("static const PcBgEvent scr%d_bg[%d] = {\n" % (i, len(data["bg"])))
+            for (x, y, kind, _), off, fl in zip(data["bg_events"], data["bg"],
+                                               data["bg_flags"]):
+                f.write("\t{%3d, %3d, %2d, %s, %s},\n"
+                        % (x, y, kind, "%5d" % off if off != 0xffff else "0xffff",
+                           "%5d" % fl if fl != 0xffff else "0xffff"))
+            f.write("};\n\n")
+        f.write("#define PC_SCRIPT_MAP_COUNT %d\n" % len(per_map))
+        f.write("static const PcScriptMap pc_script_maps[PC_SCRIPT_MAP_COUNT] = {\n")
+        for i, (map_name, data) in enumerate(per_map):
+            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d, %s, %d },\n'
+                    % (map_name, data["map_index"], i, map_name, len(data["bytes"]), i,
+                       len(data["labels"]),
+                       "scr%d_objects" % i if data["objects"] else "0",
+                       len(data["objects"]),
+                       "scr%d_bg" % i if data["bg"] else "0",
+                       len(data["bg"])))
+        f.write("};\n\n#endif\n")
+
+
 def emit_font(path, primary, common):
     """The 8x8 font as 1bpp rows, 1 = ink, bit 7 = leftmost pixel.
 
@@ -1091,6 +2113,7 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t dir;\n"
                 "    uint8_t anim;\n"
                 "    int16_t text;              /* index into pc_texts, -1 = none */\n"
+                "    uint16_t script;           /* offset in the map's script blob, $ffff = none */\n"
                 "} PcObject;\n\n")
         f.write("typedef struct {\n"
                 "    const char *name;\n"
@@ -1117,9 +2140,12 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
             if m["objects"]:
                 f.write("static const PcObject obj_%s[%d] = {\n"
                         % (ident, len(m["objects"])))
-                for (tx, ty, si, direction, anim), text in zip(m["objects"], m["obj_text"]):
-                    f.write("\t{%4d,%4d,%2d,%d,%d,%3d},  /* tile %d,%d */\n"
-                            % (tx * 16, ty * 16, si, direction, anim, text, tx, ty))
+                for (tx, ty, si, direction, anim, script), text in zip(m["objects"],
+                                                                      m["obj_text"]):
+                    f.write("\t{%4d,%4d,%2d,%d,%d,%3d,%s},  /* tile %d,%d */\n"
+                            % (tx * 16, ty * 16, si, direction, anim, text,
+                               "%5d" % script if script != 0xffff else "0xffff",
+                               tx, ty))
                 f.write("};\n")
             if m["warps"]:
                 f.write("static const PcWarp warp_%s[%d] = {\n"
@@ -1176,6 +2202,16 @@ def main():
     map_spawn = map_spawns(pc)
     coll_name_cache = {}
 
+    # Map scripts: the original's own script bytecode, assembled from the .asm
+    # macro calls (never hand-written byte tables). They come before world.h
+    # because every object_event needs the offset of its own script.
+    defs = script_defs(pc)
+    per_map, bytes_total, extern_all = [], 0, set()
+    # BGEVENT_JUMPSTD cells name a script of engine/events/std_scripts.asm by its
+    # table index; the port inlines it, so the table is read once here.
+    std_blocks, std_order = std_scripts(pc, defs["consts"])
+    item_names_all = item_names(pc)
+
     for map_name in wanted:
         w, h = map_dims(pc, map_name)
         ts = map_tileset(pc, map_name)
@@ -1202,12 +2238,20 @@ def main():
                 % (map_name, max(blocks), len(tilesets[ti]["mts"])))
 
         texts = map_texts(pc, map_name, charmap, ckeys)
+        # Every text of the map goes in the table, not only the ones an object
+        # points at: scripts reach for the rest with `showtext`.
+        for label, data in texts.items():
+            if label not in text_index:
+                text_index[label] = len(texts_all)
+                texts_all.append((label, data))
         obj_labels = map_object_texts(pc, map_name, texts, charmap, ckeys)
 
         objects = []
         obj_text = []
-        for (bx, by, spr, direction, anim), found in zip(map_objects(pc, map_name),
-                                                       obj_labels):
+        obj_specs = []
+        for (bx, by, spr, direction, anim, spec), found in zip(map_objects(pc, map_name),
+                                                              obj_labels):
+            obj_specs.append(spec)
             name = spr[len("SPRITE_"):].lower()
             idx = next((i for i, (n, _) in enumerate(sprites) if n == name), -1)
             if idx < 0:
@@ -1253,6 +2297,45 @@ def main():
                 print("warp     %-18s %d,%d -> %s #%d NOT IN BUILD (shut)"
                       % (map_name, wx, wy, dest, dest_warp))
 
+        # The objects' scripts: an OBJECTTYPE_SCRIPT points at a label already in
+        # the blob, an OBJECTTYPE_COMMAND becomes a one-command region at the end.
+        # The bg_event cells go in the same blob for the same reason: a sign's
+        # script is a script of this map, and a jump-text sign is `jumptext text`.
+        sconsts = dict(defs["consts"])
+        try:
+            bg_events = map_bg_events(pc, map_name, sconsts, std_order)
+        except Unsupported as exc:
+            print("bg        %-22s SKIPPED: %s" % (map_name, exc))
+            bg_events = []
+        # A bookshelf's text is in data/text/std_text.asm, not in the map file, and
+        # a hidden item's is _FoundItemText with the item's name filled in: both
+        # have to be in the table before the scripts can point at them.
+        for label, data in bg_event_texts(pc, bg_events, item_names_all, std_blocks,
+                                          charmap, ckeys).items():
+            if label not in text_index:
+                text_index[label] = len(texts_all)
+                texts_all.append((label, data))
+        try:
+            sdata = map_scripts(pc, map_name, defs, text_index, obj_specs, bg_events,
+                                std_blocks)
+        except Unsupported as exc:
+            print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
+            sdata = None
+        if sdata is not None:
+            sdata["map_index"] = map_slot[map_name]
+            per_map.append((map_name, sdata))
+            bytes_total += len(sdata["bytes"])
+            extern_all |= set(sdata["extern"])
+            print("scripts   %-22s %2d labels, %4d B%s"
+                  % (map_name, len(sdata["labels"]), len(sdata["bytes"]),
+                     "" if not sdata["extern"] else
+                     ", extern: " + ", ".join(sdata["extern"])))
+            ran = sum(1 for o in sdata["bg"] if o != 0xffff)
+            print("bg        %-22s %2d cells, %d with a script"
+                  % (map_name, len(bg_events), ran))
+        scripts_for = sdata["objects"] if sdata is not None else [0xffff] * len(objects)
+        objects = [o + (sc,) for o, sc in zip(objects, scripts_for)]
+
         maps.append({"name": map_name, "w": w, "h": h, "blocks": blocks, "ts": ti,
                      "objects": objects, "obj_text": obj_text, "warps": warps,
                      "pal": 1 if env in ("INDOOR", "GATE") else 0,
@@ -1276,6 +2359,12 @@ def main():
     emit_text(tpath, texts_all, pc)
     print("texts     %d in %s (%d KB)"
           % (len(texts_all), tpath, os.path.getsize(tpath) // 1024))
+
+    spath = os.path.join(out, "scripts.h")
+    emit_scripts(spath, per_map, defs, text_index, dict(defs["consts"]))
+    print("scriptsvm %d opcodes, %d B of bytecode in %s (%d KB)"
+          % (len(defs["opcodes"]), bytes_total, spath,
+             os.path.getsize(spath) // 1024))
 
     fpath = os.path.join(out, "font.h")
     emit_font(fpath, font_tiles(pc, "normal", 114), font_tiles(pc, "common", 6))

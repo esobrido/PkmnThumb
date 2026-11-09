@@ -287,6 +287,133 @@ Plan del port: no traducir los scripts a mano ni reescribirlos; extraer el bytec
 escribir un **intérprete nuevo** en C con la misma semántica de comandos. Eso da acceso
 gratis a los 458 mapas con sus eventos, textos, warps y escenas.
 
+### Cómo se ensambla ese bytecode
+
+`macros/scripts/events.asm` es la tabla de comandos: un `const X_command` por comando, en
+el mismo orden que el `jumptable` de `RunScriptCommand`, y debajo el macro que lo emite.
+
+```asm
+	const showtext_command          ; 188 = $bc
+MACRO showtext
+	db showtext_command
+	dw \1 ; text_pointer
+ENDM
+```
+
+Los cuerpos son casi todos `db`/`dw`/`dba`/`dp`/`dr` con `\1`..`\9`, así que el
+extractor **parsea la definición en vez de copiarla** (`script_defs`) y ensambla las llamadas
+del fichero del mapa (`map_scripts`), en dos pasadas porque un `sjump` puede saltar hacia
+adelante. Siete detalles que no son evidentes:
+
+- **`dp` no son dos bytes sueltos.** `macros/data.asm` lo define como
+  `db LOW(especie), HIGH(especie) << MON_EXTSPECIES_F | forma`: el segundo byte es la
+  forma (bits bajos) con los bits altos de la especie desplazados. `setmonval TOGEKISS`
+  (especie `$10f`, forma `PLAIN_FORM` = 1) emite `$0f $21`.
+- **`dr` es una distancia relativa** (16 bits, big-endian) y solo existe en las variantes
+  `sjumpfwd`/`iftruefwd`/`iffalsefwd`/`ifequalfwd`. El extractor **emite la forma absoluta**
+  equivalente: un formato de salto es suficiente en el port y el cálculo de distancias deja
+  de ser una fuente de errores de un byte.
+- **Los punteros a texto se reescriben a índices** de `pc_texts`: el port no tiene
+  direcciones de ROM. Los que apuntan fuera del fichero (datos de movimiento, scripts de
+  otro mapa) quedan en `$FFFF` y se **listan** al extraer, no se rellenan con ceros.
+- **Dentro de una etiqueta de script puede haber datos**: cadenas (`text "..."`) o pasos
+  de movimiento (`step_*`). El ensamblador los salta hasta la siguiente etiqueta `.local`,
+  que vuelve a ser código; sin eso, media docena de scripts se cortan en el primer `text`.
+- **Un macro puede inyectar código como argumento**, y de hecho lo hacen los normales:
+  `giveitem ITEM, iffalse_endtext` emite los tres bytes del objeto y después escribe `\#`,
+  que es "los argumentos que `shift` no ha consumido". Cada uno de ésos se ensambla como
+  un comando más en la misma posición; el fallback del inventario lleno es, literalmente,
+  el siguiente comando del script.
+- **Las tablas de saltos (`scalltable`)** son `dw Script1` / `dw Script2` dentro de una
+  etiqueta de script: se emiten como palabras LE con el offset de cada etiqueta, el mismo
+  formato que un `sjump`.
+- **`if DEF(DEBUG)` también está en el `.asm` del mapa**, envolviendo una escena y trozos
+  de texto. El extractor evalúa `if`/`elif`/`else`/`endc` como una compilación normal
+  (`DEBUG=0`, `FAITHFUL=0`) y descarta la rama que no se ensambla; si un `DEF()` no está
+  declarado, falla en voz alta.
+
+### De un NPC a su script
+
+`object_event` guarda en su noveno campo **cómo responde a A**, y hay dos formas:
+
+```asm
+	object_event 29, 12, SPRITE_POKEFAN_F, SPRITEMOVEDATA_SPINRANDOM_SLOW, 0, 0, -1, \
+		PAL_NPC_PURPLE, OBJECTTYPE_SCRIPT, 0, TuscanyScript, EVENT_ROUTE_29_TUSCANY_OF_TUESDAY
+	object_event 27, 16, SPRITE_SCHOOLBOY, SPRITEMOVEDATA_WALK_UP_DOWN, 1, 0, -1, \
+		PAL_NPC_GREEN, OBJECTTYPE_COMMAND, jumptextfaceplayer, Route29YoungsterText, -1
+```
+
+- `OBJECTTYPE_SCRIPT` es una **etiqueta de script** del mismo fichero, que ya está en el
+  blob: el objeto guarda su offset (`PcObject.script`).
+- `OBJECTTYPE_COMMAND` es **un comando con su argumento**. El motor lo "ejecuta" copiando
+  ese campo a `wScriptPointer`, así que el extractor emite ese comando como una región de
+  tres bytes al final del blob: el objeto apunta a un script de una línea, exactamente como
+  el original. `ObjectEvent` en ese campo es el valor nulo (NPC de escena, sin diálogo).
+- `OBJECTTYPE_ITEMBALL`/`TRAINER`/`POKEMON`/`GENERICTRAINER` leen una ficha propia (el
+  objeto, la party) en vez de un script: `tools/extract.py` los nombra en la salida y deja
+  el objeto sin script.
+
+Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 508 B de bytecode** y 79 etiquetas en
+los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`) y **39
+de 40 celdas `bg_event`**. Los dos mapas sin etiquetas de script
+(`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente: solo los comandos de sus
+NPCs y sus carteles, 9 B y 15 B. Lo que el ensamblador no puede resolver — datos
+de movimiento en otro fichero, un `dw` de otro banco, un entrenador — no se adivina: queda
+en `$FFFF` y se lista en la salida del extractor.
+
+### De un cartel a su script
+
+`bg_event` es la segunda capa de "lo que hay delante": el motor busca un
+`object_event` en la celda y, si no hay, un `bg_event` (`CheckAPressOW` →
+`TryObjectEvent` → `TryBGEvent`). La fila lleva la celda, el tipo y el puntero:
+
+```asm
+	bg_event  8,  8, BGEVENT_JUMPTEXT, NewBarkTownSignText
+	bg_event  6,  1, BGEVENT_UP,       PlayersHouse1FTVScript
+	bg_event  2,  1, BGEVENT_READ,     ElmsLabHealingMachine
+	bg_event  6,  1, BGEVENT_JUMPSTD,  difficultbookshelf
+	bg_event  3,  2, BGEVENT_ITEM + POTION, EVENT_NEW_BARK_TOWN_HIDDEN_POTION
+```
+
+- `BGEVENT_JUMPTEXT` no apunta a un script: el motor **construye** uno
+  (`jumptext <texto>`) y lo ejecuta. El extractor emite esos mismos tres bytes al final
+del blob, así que el port no distingue un cartel de un NPC.
+- `BGEVENT_READ` (3 celdas en el build, una de ellas apuntando a `InitialRadio`, que vive
+  en otro fichero) y `BGEVENT_UP/DOWN/RIGHT/LEFT` (5 celdas) apuntan a un script del
+  propio mapa, que ya está en el blob: la celda guarda su offset.
+- `BGEVENT_JUMPSTD` (9 celdas en el build, las estanterías del laboratorio) nombra una
+  entrada de `StdScripts::` (`engine/events/std_scripts.asm`, indexada en el orden de
+  `constants/std_constants.asm`): el motor salta a esa tabla, y aquí el script se **copia
+  entero** como una región más del blob. `DifficultBookshelfScript` es
+  `farjumptext DifficultBookshelfText`, que en el port es un `jumptext` normal (no hay
+  bancos) apuntando a un texto de `data/text/std_text.asm`.
+- `BGEVENT_ITEM + <objeto>` (2 celdas) es un objeto escondido: el byte del tipo **es** el
+  id del objeto sumado a `BGEVENT_ITEM`, y el cuarto campo es el flag que lo marca
+  recogido. El motor comprueba ese flag *antes* de leer y, si está limpio, entra en
+  `HiddenItemScript` con el id en `wHiddenItemID`. El extractor emite un script de dos
+  comandos (`opentext`, `jumptext <texto>`) y deja en la celda el objeto y el flag; la
+  entrega y el `setevent` los hace el juego.
+- La única celda sin script es el `BGEVENT_READ` de la radio de casa de los vecinos:
+  `InitialRadio` vive en otro fichero, así que sigue a `$FFFF` y se lista en la salida.
+
+El tipo es el byte original (`PC_BGEVENT_*` en `gen/scripts.h`), no un enum nuevo: la
+celda dice `BGEVENT_UP` y el port lo compara con la dirección del jugador en
+`script/trigger`.
+
+### Texto que no tiene etiqueta
+
+`jumpthistext`, `jumpthistextfaceplayer` y `jumpthisopenedtext` imprimen **dónde está el
+script**, no una etiqueta. Hay dos sitios donde eso cae:
+
+- dentro del mismo bloque, después del comando (`jumpthistext` + `text "..."`);
+- en la **etiqueta siguiente** del fichero, que es lo normal cuando el comando es la última
+  línea del script (así termina `MysticWaterGuy` en Ciudad Cerezo, imprimiendo
+  `MysticWaterGuyTextAfter`).
+
+El extractor distingue los dos y emite el índice de `pc_texts` como operando de 2 bytes, que
+no es lo que dice el `.asm` (allí no hay operando) pero sí lo que el port necesita: la VM no
+tiene que adivinar dónde acaba un texto dentro del blob.
+
 ## Texto
 
 El texto del mapa **ya es bytecode**, no una cadena: `text "..."` emite `$00`
@@ -306,14 +433,24 @@ añade a los caracteres normales:
 | `<RIVAL>` | `$50` | el del rival |
 | `<TRENDY>` | `$51` | la frase de moda (aún no portada) |
 
+Un `text` **no** emite otro `<START>` si ya se empezó: `macros/scripts/text.asm` sólo
+manda el byte cuando el bloque arranca (`_dtxt`), y los `text` siguientes aportan
+caracteres. `_FoundItemText` (`text "<PLAYER> found"`, `line ""`, `text_ram`, `text "!"`)
+es el caso que lo muestra.
+
 Como el ensamblador ya resolvió el charmap, el extractor sólo tiene que hacer el
 mapeo inverso (`maximal munch`, para que `#mon` gane a `#`) y emitir los bytes tal
-cual: no hay que imitar el compresor Huffman del ROM, porque los tres mapas de
-arranque suman **13 textos / 6 KB de header**, nada frente a los 16 MB de flash.
+cual: no hay que imitar el compresor Huffman del ROM, porque los mapas de
+arranque suman **173 textos / 91 KB de header**, nada frente a los 16 MB de flash.
 
-`text_far`, `text_asm`, `text_ram` y `text_decimal` delegan en otro fichero o en
-código: el extractor los **salta** en vez de emitir media frase, y quedarán para
-el intérprete de scripts (SCR-02).
+`text_ram` imprime el buffer que el script acaba de llenar. El port no tiene buffers de
+cadena: el extractor acepta un `ram={buffer: bytes}` y escribe esos bytes como si fueran
+texto, que es lo que hace con `wStringBuffer3` en `_FoundItemText` para cada objeto
+escondido (el nombre sale de `data/items/names.asm`, indexado por el id del original).
+
+`text_far`, `text_asm` y `text_decimal` delegan en otro fichero o en código: el extractor
+los **salta** en vez de emitir media frase, y quedarán para el intérprete de scripts
+(SCR-02).
 
 ### De un NPC a su texto
 

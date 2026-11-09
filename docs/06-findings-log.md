@@ -288,6 +288,135 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   flujo de texto (`jp hl`); el port lo trata como fin de cadena, que es la otra rama del
   original, antes que imprimir instrucciones de máquina como letras.
 
+## Trampas nuevas (fase 2: ensamblar los scripts)
+
+- **`const_def -1` existe y el signo importa.** El bloque de direcciones
+  (`STANDING $-1$, DOWN $0$, UP $1$, LEFT $2$, RIGHT $3$) empieza en −1; un parser que
+  solo acepta positivos arranca el contador donde lo dejó el bloque anterior y `LEFT`
+  sale **11** en vez de 2. No falla nada: el NPC gira a un valor que no es una dirección.
+  Se vio porque un test comprobaba el argumento de `turnobject`.
+- **Un mismo nombre de constante puede vivir en dos espacios.** `LEFT` es dirección de
+  caminar (2) y `FACE_LEFT` es dirección de cara (11); mezclarlos compila y no gira nada.
+  El diccionario de constantes se queda con la primera definición, así que el orden de
+  los ficheros de `constants/` es parte del contrato.
+- **`dp` no son dos bytes sueltos.** `macros/data.asm` lo define como
+  `db LOW(especie), HIGH(especie) << MON_EXTSPECIES_F | forma`: el segundo byte lleva la
+  **forma** en los bits bajos, no el byte alto crudo. `setmonval TOGEKISS` (especie
+  `$10f`) emite `$0f $21`, y leerlo como "par de bytes" daría `$0f $01`, que es la especie
+  271 con la forma equivocada. La constante se lee del propio fichero fuente, no se
+  adivina.
+- **`dr` es una distancia relativa y big-endian.** Solo aparece en las variantes `*fwd`
+  de los saltos, que existen para ahorrar bytes. El port no las necesita: el extractor
+  emite el salto absoluto equivalente, y así hay un solo formato de salto que pueda estar
+  mal.
+- **Dentro de una etiqueta de script hay datos, no solo código.** Un bloque puede seguir
+  con `text "..."` o con pasos de movimiento después de su `end`, y más tarde tener otra
+  etiqueta `.local` que sí es código (`.FirstTimeBanking:` detrás de un texto en línea).
+  Cortar el bloque en el primer `text` pierde esa segunda mitad; hay que saltar los datos
+  hasta la siguiente etiqueta.
+- **Los `.local` se referencian hacia adelante.** `iftruefwd .Totodile` precede a
+  `.Totodile:` en el mismo bloque, así que una sola pasada marca como externo lo que es
+  local. Hacen falta dos: una para los tamaños y las posiciones de las etiquetas, otra
+  para los valores.
+- **Algunos macros inyectan código como argumento** (`giveitem ITEM, iffalse_endtext`):
+  `giveitem` llama a `giveitem_unsafe \1` (los tres bytes del objeto) y después escribe
+  `\#`, que en RGBDS no es "lo que sobra en la línea" sino **los argumentos que `shift`
+  no ha consumido**. Cada uno de ellos se ensambla como un comando más, en la misma
+  posición. Es lo que hace que la tienda de objetos y su fallback (`iffalse_endtext`)
+  sean dos comandos seguidos, no un argumento del `giveitem`.
+- **`if _NARG == n` dentro de un macro no se puede ignorar.** `givepoke`/`loadwildmon`
+  emiten distinto número de bytes según cuántos argumentos reciben; saltarse la condición
+  emite las dos ramas y una de ellas referencia un `\3` que no existe.
+- **`elif` también lleva argumentos.** `pokepic` y `cry` hacen `if \1 == 0` …
+  `elif _NARG == 2` … `else`, y la condición se evalúa **después** de sustituir `\1`:
+  comparar el texto `\1` con 0 no da nunca. Un `if` mal evaluado no falla: elige la rama
+  equivocada y emite la forma equivocada.
+- **El `.asm` del mapa también está lleno de condicionales de compilación.**
+  `if DEF(DEBUG)` envuelve una escena entera de Elm y trozos de sus textos (unas 30 líneas
+  sólo para el build de debug). Ignorarlos no rompe el ensamblado: mete texto de debug en
+  `pc_texts` y desplaza los índices de todos los textos siguientes. El port es una
+  compilación normal (`DEBUG=0`, `FAITHFUL=0`), así que el extractor resuelve
+  `if`/`elif`/`else`/`endc` y tira la otra rama.
+- **Hay tablas de saltos dentro de un script**: `scalltable .Tabla` seguido de
+  `dw Script1` / `dw Script2`. Son datos con forma de código: si se saltan "hasta la
+  siguiente etiqueta" el `scalltable` acaba apuntando a otra cosa, y si se emiten como
+  texto, el comando lee basura. Se emiten como palabras LE con el offset de la etiqueta,
+  igual que un `sjump`.
+
+## Trampas nuevas (fase 2: ejecutar los scripts de un NPC)
+
+- **El noveno campo de `object_event` no siempre es una etiqueta.** Con
+  `OBJECTTYPE_COMMAND` el campo es *un comando con su argumento*
+  (`jumptextfaceplayer, Route29YoungsterText`), y el motor lo ejecuta copiando ese campo a
+  `wScriptPointer`: es un script de tres bytes que vive en el propio `object_event`. Tratarlo
+  como etiqueta deja a media población de Johto muda.
+- **`jumpthisopenedtext` suele imprimir la etiqueta *siguiente*.** El comando imprime "el
+  texto donde está el script"; cuando es la última línea del bloque (`MysticWaterGuy`), ese
+  puntero cae en el label de texto que viene después, no en un texto inline. Un extractor que
+  solo mire dentro del bloque no encuentra nada y —peor— si se conforma con "saltar líneas
+  hasta el siguiente label" se come el bloque de texto entero y desplaza todo lo que sigue.
+- **`jumptext` no vuelve.** Salta a `{opentext; repeattext; waitendtext}`: el script termina
+  con ese texto y los bytes posteriores son datos. Una VM que "continue" después del texto
+  intenta ejecutar el texto como código (se ve como `unsupported 0xbc` al cerrar la caja).
+  Se arregla con un flag de "esto era lo último", no con `pos = len`, porque `pos == len`
+  ya significa "se salió del script" y es un error.
+- **Los flags y los eventos son dos arrays en el original** (`wEngineFlags` y
+  `wEventFlags`). La VM recibe uno solo, así que `FLAG_x` y `EVENT_x` comparten bit cuando
+  el número coincide; el tamaño se calcula desde los scripts (`PC_SCRIPT_FLAG_BYTES`), no a
+  ojo, para que ningún índice caiga fuera del array.
+- **`MOTE_KEYS` no sirve para posicionar a un NPC.** Con ventanas de 100 lecturas el jugador
+  acaba al lado pero no enfrente, y un `a` a destiempo no habla (o habla a otro). Para
+  verificar diálogos, cerrar la receta contra algo que absorba (una pared, el borde) o
+  comprobarlo con la tabla de objetos de `world.h` en la mano.
+
+- **`bg_event` es lo que hay delante cuando no hay nadie.** El motor prueba
+  `object_event` y luego `bg_event`; un cartel, una estantería o la nevera no son tiles de
+  colisión ni NPCs, así que sin esa segunda búsqueda A no hacía nada aunque el jugador
+  estuviera mirando al cartel.
+- **`BGEVENT_JUMPTEXT` no apunta a un script**, apunta a un texto: el motor se fabrica el
+  script (`jumptext <puntero>`) y lo ejecuta. Tratarlo como etiqueta de script no compila;
+  el port emite esos tres bytes.
+- **El cambio de mapa de depuración (RB/LB) no recoloca al jugador.** Conserva la posición
+  del mapa anterior, así que una receta que empieza con RB no está en el spawn de destino:
+  para posicionarse, entrar por la puerta o mirar la tabla de celdas.
+- **`MOTE_SHOT=/dev/null` no ejecuta la receta.** Sin un PNG donde escribir, el host no
+  llega al frame pedido y no hay ni logs ni captura; para depurar posiciones, apuntar a un
+  fichero real.
+
+## Trampas nuevas (fase 2: estanterías y objetos del suelo)
+
+- **Un `bg_event` que nombra un std script no lleva puntero, lleva un índice.**
+  `BGEVENT_JUMPSTD, difficultbookshelf` guarda la entrada de `StdScripts::` (el orden de
+  `constants/std_constants.asm`), y el motor salta a esa tabla. La tabla y los `const`
+  pueden desincronizarse en silencio y cada celda apuntaría al script de al lado, así que
+  el extractor compara los dos y falla si no cuadran. En el port el script se **copia** al
+  blob: no hace falta tabla en flash ni un opcode `jumpstd`.
+- **`farjumptext` es `jumptext` sin bancos.** `DifficultBookshelfScript` es una línea,
+  `farjumptext DifficultBookshelfText`; el `far` es un puntero de 3 bytes a otro banco, que
+  aquí no existe. Traducirlo a mano en cada std script no escala: el ensamblador mapea el
+  macro al opcode normal.
+- **Los textos de los std scripts viven en otro fichero** (`data/text/std_text.asm` y
+  `common.asm`), y las etiquetas de `data/text` son globales (`Label::`). `label_blocks`
+  solo entendía `Label:`, así que `_FoundItemText` "no existía"; aceptar `::` lo arregla y no
+  cambia ningún texto de los mapas (se comprobó con el diff de `gen/text.h`).
+- **Un `text` de más no emite otro `<START>`.** En `_FoundItemText` hay dos `text` separados
+  por un `text_ram`; `macros/scripts/text.asm` solo manda `$00` en el primer `text` del
+  bloque (`_dtxt`), y los siguientes son caracteres. Un extractor que emita `$00` por cada
+  `text` mete un byte de control en mitad de la frase.
+- **`BGEVENT_ITEM` no está en los `const`**: es `DEF ... EQU NUM_BGEVENTS`, así que el id
+  del objeto es `tipo - BGEVENT_ITEM` y el cuarto campo es el **flag**, no el objeto. El
+  motor comprueba el flag antes de leer; el port hace lo mismo en `script/trigger` y el
+  flag lo pone el juego al meter el objeto en la bolsa.
+- **Un objeto escondido puede estar en una celda que no se pisa.** `place_player` recoloca
+  al jugador si el punto de spawn está bloqueado (busca la celda libre más cercana), así
+  que un spawn temporal en la celda de al lado puede acabar dos celdas más allá y la A cae
+  en el vacío. Verificar con la tabla de collision de `world.h` en la mano, no a ojo.
+- **La primera A de una receta se pierde mientras la caja está revelándose.** Abrir un
+  texto y "cerrarlo" con la siguiente ventana puede ser la misma pulsación; para ver si un
+  texto se reabre hace falta una tercera ventana separada ~50 lecturas. Los logs sí salen
+  desde `g_update` (los de `g_init` también), así que el oráculo barato es un contador
+  temporal en `try_talk` sobre la salida del host.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,

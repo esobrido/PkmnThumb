@@ -184,6 +184,92 @@ Hablar: `A` con un NPC en la celda a la que miras. El jugador debe estar entre c
 (a mitad de paso no se habla, igual que en el GB); el NPC gira hacia ti y el mundo se
 congela (sin caminar y sin giros de NPC) mientras la caja está abierta.
 
+## Scripts
+
+`script/vm` interpreta el bytecode que emite `tools/extract.py` (`gen/scripts.h`), que es
+el del propio juego ensamblado desde sus macros. No hay traducción de scripts a C: un
+`showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
+hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
+(`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
+del arranque suman 2 508 B de bytecode, 79 etiquetas, 32 scripts de objeto y 40 celdas
+`bg_event` (39 con script).
+
+Tres decisiones de forma:
+
+- **La VM no toca el mundo.** `scr_vm_next` corre hasta que el script necesita algo
+  (imprimir, girar, sonar, esperar) y devuelve un `ScrOut` con la clase de trabajo y sus
+  argumentos; el llamante lo hace y vuelve a llamar. Así la VM se prueba sin pantalla y
+  `game.c` sigue siendo el único que sabe qué es un textbox. Es también lo que hace que un
+  `showtext` no pueda bloquear al intérprete: la espera la decide el que dibuja.
+- **Nada de punteros del juego.** Los saltos son offsets dentro del blob del mapa, los
+  textos son índices de `pc_texts` y los objetos son el número del `object_event`. Una
+  referencia que el extractor no pudo resolver llega como `$FFFF`/`$FF` y se ve en la
+  salida de `tools/extract.py`, en vez de convertirse en un salto a la nada.
+- **La pila tiene 5 huecos**, como `wScriptStackSize`; la sexta llamada da la vuelta al
+  índice en vez de corromper memoria (el original se come el byte alto de la entrada más
+  antigua — el fallo está documentado en `docs/03` del propio juego).
+
+Lo que hay: control de flujo (`sjump`, `scall`, `ifequal`, `iftrue`, `iffalse`, `end`,
+`endcallback`), flags y eventos (`checkflag`, `setflag`, `clearflag`, `checkevent`,
+`setevent`, `clearevent`), texto (`showtext`, `showtextfaceplayer`, `opentext`,
+`closetext`), mundo (`turnobject`, `faceplayer`, `disappear`, `appear`, `playsound`,
+`pause`, `setlasttalked`) y `waitsfx` como no-op.
+
+Lo que falta, y se dice en voz alta: **un opcode que la VM no conoce no se interpreta a
+medias**. Devuelve `SCR_EV_UNSUPPORTED` con su número y la VM se marca muerta, porque sus
+argumentos tienen longitudes distintas por comando y seguir leyendo sería interpretar
+datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `special`,
+`jumpstd`, `readvar` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que
+las usan.
+
+### Hablar, leer un cartel: los dos acaban en la VM
+
+A en el overworld arranca el script de la celda de enfrente, en el orden del original
+(`CheckAPressOW`): primero el `object_event` que hay ahí y, si no hay, el `bg_event`
+—cartel, estantería, la nevera—. El primero se busca recorriendo los actores; el segundo
+lo resuelve `script/trigger` (`pc_bg_event`), que además exige el lado correcto en las
+celdas `BGEVENT_UP/DOWN/RIGHT/LEFT`, contesta que no cuando no hay nada que leer y, en una
+celda de objeto escondido, comprueba el flag antes: un objeto ya cogido deja de estar ahí,
+como en `TryBGEvent`.
+
+Las tres formas de ejecutar un `bg_event` son tres formas de rellenar el blob, no tres
+motores: un cartel es `jumptext <texto>`, una estantería es **el std script copiado
+entero** (`DifficultBookshelfScript` → `jumptext <texto de std_text>`) y un objeto
+escondido es `opentext` + `jumptext <texto de _FoundItemText con el nombre dentro>`. Por
+eso `game.c` solo distingue un caso especial: si el `bg_event` esconde un objeto, primero
+lo mete en la bolsa (`bag.c`, ids del original) y marca el flag; si la bolsa está llena no
+hace nada y la celda sigue ahí — es la rama `pocketisfull` del original, sin su texto.
+
+No hay una capa intermedia que traduzca el script a acciones: el despachador de `game.c`
+hace lo que el evento pide y vuelve a llamar,
+
+| Evento | Qué hace el port |
+|---|---|
+| `SCR_EV_TEXT` | abre el textbox con ese índice y deja **esperando** a la VM |
+| `SCR_EV_FACE` | gira el actor (o lo calcula, si es "hacia el jugador") |
+| `SCR_EV_TEXT_OPEN`/`_CLOSE` | nada: el port abre una caja por texto |
+| `SCR_EV_SOUND`, `_DELAY` | nada todavía (audio es TXT-10) |
+| `SCR_EV_SPRITE` | nada: `appear`/`disappear` no se dibujan aún (SCR-06) |
+| `SCR_RUN_END` | el script acabó |
+| `SCR_EV_UNSUPPORTED`, `SCR_RUN_ERROR` | **vuelta al texto plano del objeto** |
+
+Las dos capas acaban en la misma VM y en el mismo despachador: `try_talk` sólo cambia
+qué offset le pasa a `scr_vm_start`.
+
+Esa última fila es la decisión que importa: un comando que el port no ejecuta no deja al
+NPC mudo a media frase. El script se detiene, se anota el opcode en el log (`script:
+stopped at 0x1e`) y se muestra el texto que `first_text_ref` extrajo para ese objeto, que
+es el comportamiento que tenía el port antes de tener VM. Medido: de los 32 objetos con
+script, 19 llegan a un texto y 13 se paran en el primero (cinco de la madre, que empieza por
+`readvar`); de los 19, quince coinciden con el texto plano y cuatro no, porque su primer
+texto depende de un evento (la maestra de New Bark Town elige entre tres).
+
+Los flags y eventos están en **un solo array** de `PC_SCRIPT_FLAG_BYTES` (222 B en este
+build, el índice más alto que tocan los scripts), porque la VM recibe un puntero y un
+tamaño. En el original son dos arrays (`wEngineFlags` y `wEventFlags`); compartirlo es
+aceptable mientras ningún script mezcle `FLAG_x` con `EVENT_x` del mismo número, y está
+anotado en `TASKS.md` como deuda.
+
 ## UI: listas y menú de pausa
 
 `ui/list` es la ventana que compartirán el menú de pausa, el equipo, la mochila y las
@@ -280,13 +366,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús) | ver `.mote`: **49 556 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 044 B** (capa de celdas de NPC + estado de texto/menús + el warp) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **76 036 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 384 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 49 556 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 76 036 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

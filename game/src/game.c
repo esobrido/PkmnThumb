@@ -62,7 +62,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.16.0");
+MOTE_GAME_VERSION("0.17.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -431,6 +431,11 @@ static void talk_text(const PcObject *o) {
 }
 
 static void script_run(void);
+static void script_begin(uint16_t offset, int obj);
+
+/* Scripts here nest only through `sdefer`; four levels is far more than the
+ * original's one deferred slot and stops a script that defers itself. */
+static int script_depth;
 
 /* A command the port cannot run stops the script, and the NPC says its flat
  * text instead: half a conversation is worse than the old behaviour. The log
@@ -616,6 +621,12 @@ static void script_run(void) {
         ScrRun r = scr_vm_next(&script, &out);
         if (r == SCR_RUN_END) {
             script_active = 0;
+            /* `sdefer` queued a follow-up script: it runs now, as the original's
+             * deferred script does between script frames. */
+            uint16_t next;
+            if (script_depth < 4 && scr_vm_deferred(&script, &next)) {
+                script_begin(next, script_object);
+            }
             return;
         }
         if (r == SCR_RUN_ERROR) {
@@ -662,8 +673,54 @@ static void script_run(void) {
             for (int i = 0; i < OW_MAX_ACTORS; i++) follow_of[i] = -1;
             player_follower_of = -1;
             break;
+        /* `writetext`: the box goes up and the script keeps running behind it. */
+        case SCR_EV_TEXT_NOWAIT:
+            if (out.a >= PC_TEXT_COUNT) {
+                script_fallback(0xfffe);
+                return;
+            }
+            textbox_open(&textbox, pc_texts[out.a].bytes, pc_texts[out.a].len, &k_vars);
+            apply_text_speed();
+            break;
+
+        /* `waitbutton`: the script waits for the player to read the box out. The
+         * box closes itself on the last A (see the textbox branch of g_update),
+         * which is the same signal `showtext` waits for; a wait with no box up is
+         * already satisfied — the original would still ask for a button there,
+         * but a script cannot reach a wait without having printed something. */
+        case SCR_EV_TEXT_WAIT:
+            if (textbox_is_open(&textbox)) return;
+            break;
+
+        case SCR_EV_TEXT_END:          /* `endtext`: closetext, then end */
+            textbox_close(&textbox);
+            break;
+
+        /* `moveobject`: an object changes cell without walking there. */
+        case SCR_EV_PLACE: {
+            int who = object_actor(out.b);
+            int cx = (int)(out.a & 0xff) << 4;
+            int cy = (int)(out.a >> 8) << 4;
+            if (who == MOVER_PLAYER) {
+                place_player(cx >> 4, cy >> 4, player.dir);
+            } else if (who >= 0 && who < actor_count) {
+                ow_actor_init(&actors[who], (uint8_t)cx, (uint8_t)cy,
+                              actors[who].dir, pc_maps[map_index].objects[who].anim);
+                mark_actors();
+            }
+            break;
+        }
+
+        /* `reloadmap`: rebuild the map the player is standing on, in place. */
+        case SCR_EV_RELOADMAP: {
+            int cx = player.px >> 4, cy = player.py >> 4;
+            int dir = player.dir;
+            load_map_tables(map_index);
+            place_player(cx, cy, dir);
+            break;
+        }
+
         case SCR_EV_TEXT_OPEN:
-        case SCR_EV_TEXT_CLOSE:
         case SCR_EV_SOUND:             /* no audio yet (TXT-10) */
         case SCR_EV_DELAY:             /* the original waits; nothing blocks here */
         case SCR_EV_SPRITE:            /* appear/disappear is not drawn yet */
@@ -687,7 +744,9 @@ static void script_begin(uint16_t offset, int obj) {
                  script_flags, PC_SCRIPT_FLAG_BYTES);
     scr_vm_set_scene(&script, &map_scene);
     script_active = 1;
+    script_depth++;
     script_run();
+    script_depth--;
 }
 
 static void try_talk(void) {

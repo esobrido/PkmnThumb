@@ -332,11 +332,11 @@ static void test_jumptext_ends(void) {
 }
 
 /* The objects' scripts are the ones the game runs now. 32 of the 40 objects in
- * the build have one; 19 reach a text and 13 stop at a command the port does not
- * run yet (`readvar`, `special`, movement of other objects). Where the extractor's
- * flat guess and the script agree it is because both read the same text; the
- * four that differ are scripts whose first text depends on an event (the teacher
- * says one of three things), which is exactly why the VM is the better oracle. */
+ * the build have one; 25 reach a text and 7 stop at a command the port does not
+ * run yet (`readvar`, `special`, battle). Where the extractor's flat guess and the
+ * script agree it is because both read the same text; the five that differ are
+ * scripts whose first text depends on an event (the teacher says one of three
+ * things), which is exactly why the VM is the better oracle. */
 static void test_object_scripts(void) {
     int with_script = 0, reached = 0, same = 0, outside = 0;
     for (int m = 0; m < PC_SCRIPT_MAP_COUNT; m++) {
@@ -375,9 +375,85 @@ static void test_object_scripts(void) {
         }
     }
     CHECK(with_script == 32, "32 objects have a script of their own");
-    CHECK(reached == 19, "19 of them reach a text before a command the port lacks");
+    CHECK(reached == 25, "25 of them reach a text before a command the port lacks");
     CHECK(outside == 0, "every text they show is inside pc_texts");
-    CHECK(same == 15, "15 agree with the flat text the extractor read for them");
+    CHECK(same == 20, "20 agree with the flat text the extractor read for them");
+}
+
+/* The commands a cutscene uses to talk and to place people: `writetext` prints
+ * without waiting, `waitbutton` is the wait, `endtext` closes and ends, and
+ * `moveobject` parks an object on another tile. */
+static void test_cutscene_commands(void) {
+    uint8_t code[24];
+    int n = 0;
+    n = b(code, n, PCS_WRITETEXT);
+    n = w(code, n, 7);                 /* the text */
+    n = b(code, n, PCS_WAITBUTTON);
+    n = b(code, n, PCS_MOVEOBJECT);
+    n = b(code, n, 3);                 /* person */
+    n = b(code, n, 12);                /* x tile */
+    n = b(code, n, 9);                 /* y tile */
+    n = b(code, n, PCS_REANCHORMAP);
+    n = b(code, n, PCS_ENDTEXT);
+
+    ScrVm vm;
+    ScrOut out;
+    scr_vm_start(&vm, code, (uint16_t)n, 0, NULL, 0);
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_TEXT_NOWAIT && out.a == 7,
+          "writetext prints without waiting");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_TEXT_WAIT, "waitbutton asks for the box to be read");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT && out.kind == SCR_EV_PLACE &&
+          out.b == 3 && (out.a & 0xff) == 12 && (out.a >> 8) == 9,
+          "moveobject carries person, x and y");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_TEXT_END, "endtext closes the box");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "and the script is over");
+
+    /* `waitendtext` is the same wait, and ends too. */
+    n = 0;
+    n = b(code, n, PCS_WAITENDTEXT);
+    n = b(code, n, PCS_WRITETEXT);     /* never reached */
+    n = w(code, n, 1);
+    scr_vm_start(&vm, code, (uint16_t)n, 0, NULL, 0);
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_TEXT_WAIT, "waitendtext waits first");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "then the script ends");
+
+    /* `reloadmap` stops the script: the map load owns what happens next. */
+    n = 0;
+    n = b(code, n, PCS_RELOADMAP);
+    n = b(code, n, PCS_WRITETEXT);
+    n = w(code, n, 1);
+    scr_vm_start(&vm, code, (uint16_t)n, 0, NULL, 0);
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_RELOADMAP, "reloadmap asks for the map back");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "and the script does not go on");
+}
+
+/* `sdefer` is not a command the caller has to run: it leaves a second script
+ * behind, and the VM reports it once. */
+static void test_sdefer(void) {
+    uint8_t code[8];
+    int n = 0;
+    n = b(code, n, PCS_WRITETEXT);
+    n = w(code, n, 2);
+    n = b(code, n, PCS_SDEFER);
+    n = w(code, n, 6);
+    n = b(code, n, PCS_END);
+
+    ScrVm vm;
+    ScrOut out;
+    uint16_t at = 0;
+    scr_vm_start(&vm, code, (uint16_t)n, 0, NULL, 0);
+    CHECK(scr_vm_deferred(&vm, &at) == 0, "nothing deferred before the command");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_EVENT &&
+          out.kind == SCR_EV_TEXT_NOWAIT, "the text comes first");
+    CHECK(scr_vm_next(&vm, &out) == SCR_RUN_END, "the script ends");
+    CHECK(scr_vm_deferred(&vm, &at) == 1 && at == 6,
+          "and leaves the deferred script at its offset");
+    CHECK(scr_vm_deferred(&vm, &at) == 0, "reported only once");
 }
 
 /* `verbosegiveitem SILK_SCARF, iffalse_endtext` takes its item as an argument
@@ -416,6 +492,8 @@ int main(void) {
     test_real_callback();
     test_real_script();
     test_real_giveitem();
+    test_cutscene_commands();
+    test_sdefer();
     test_jumptext_ends();
     test_object_scripts();
     test_applyonemovement_inline();

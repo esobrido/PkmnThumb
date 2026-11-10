@@ -524,6 +524,30 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **`MOTE_SHOT` escribe PPM con extensión `.png`.** El fichero abre sin quejarse, pero hay
   que convertirlo con PIL antes de mirarlo o de embeberlo en la docs.
 
+## Trampas nuevas (fase 2: texto continuo y `moveobject`)
+
+- **`writetext` no es `showtext` y casi todo el juego usa el primero.** 134 de los 1 852
+  comandos de los scripts del build son `writetext`; sin él, cualquier NPC con una frase
+  partida caía al texto plano de reserva aunque la VM supiera hacer el resto. La
+  diferencia es la espera: `showtext` deja la VM parada, `writetext` sigue con la caja
+  abierta. Portarlo mal (hacerlos iguales) no rompe nada visible — se ven los textos —
+  pero congela los guiones donde el original sigue moviéndose; el síntoma es un NPC que
+  habla y no avanza.
+- **Esperar `waitbutton` es esperar a que la caja se cierre.** La caja del port pagina sola
+  y se cierra con el último A, así que la señal correcta es `textbox_is_open() == 0`. Un
+  `waitbutton` con la caja ya cerrada se da por cumplido: pedir un botón ahí no tiene
+  pantalla que lo justifique y colgaría el guion para siempre.
+- **`moveobject` cuenta en tiles del mapa, sin el borde de 4 del original.** El asm suma
+  `+4` porque `MAPOBJECT_X/Y` llevan el borde del mapa dentro; el port coloca el actor en
+  la celda (x, y) directamente. Si se copia el `+4`, el rival de Cerezo aparece 4 tiles más
+  abajo y a la derecha, fuera de la escena.
+- **`endtext` no es "cerrar y seguir": cierra y acaba.** `waitendtext` = `waitbutton` +
+  `endtext`. Tratarlo como un `closetext` deja el guion leyendo bytes de texto como si
+  fueran opcodes detrás del final real.
+- **`sdefer` necesita tope.** El offset diferido se ejecuta al terminar el guion; un guion
+  que se encola a sí mismo (o una cadena larga) recursa en `script_begin`. Cuatro niveles
+  bastan: el original tiene **un** hueco (`wDeferredScriptAddr`).
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -549,10 +573,12 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   **cruza bordes entre mapas** por las conexiones, sin fundido, **dispara los
   `coord_event`** al terminar un paso (la maestra de New Bark Town, el guía de Cerezo) y
   **mueve NPCs desde script** (`applymovement`/`applyonemovement`, `follow`/`stopfollow`,
-  paso del jugador desde el mismo intérprete) con los patrones de paseo por su cuenta.
+  paso del jugador desde el mismo intérprete) con los patrones de paseo por su cuenta, y
+  **ejecuta texto continuo de cutscene** (`writetext`/`waitbutton`/`promptbutton`/`endtext`),
+  coloca objetos (`moveobject`), recarga el mapa (`reloadmap`) y encola guiones (`sdefer`).
 - Verificado: `scripts/test.sh` (21 programas unitarios y 7 escenarios, todos en verde,
   `test_ow_move` y `test_text_box` incluidos los 24 comandos),
-  build host y de device (82 196 B, `.bss` 3 776 B), captura headless
+  build host y de device (82 752 B, `.bss` 3 784 B), captura headless
   (`docs/img/door.png` es la secuencia exterior → blanco → interior), la cutscene completa
   de la maestra (`artifacts/scr06.png`), movimiento con `MOTE_KEYS` y compilación sin
   warnings propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).

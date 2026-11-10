@@ -129,6 +129,10 @@ void textbox_set_speed(TextBox *b, int ticks);
  * page, or close. */
 void textbox_advance(TextBox *b);
 
+/* `closetext`: put the box away, whatever it was showing (the player can still
+ * close it with A on the last page, which is the usual path). */
+void textbox_close(TextBox *b);
+
 int textbox_is_open(const TextBox *b);
 int textbox_waiting(const TextBox *b);
 

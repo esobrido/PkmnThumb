@@ -53,6 +53,13 @@ typedef enum {
     SCR_EV_MOVE,         /* a = movement offset in the map's blob, b = object id */
     SCR_EV_FOLLOW,       /* a = leader object id, b = follower */
     SCR_EV_STOPFOLLOW,   /* the follower stops copying the leader */
+    /* `writetext` prints without waiting, so the script goes on with the box up;
+     * `waitbutton` is the script asking for the player to finish reading. */
+    SCR_EV_TEXT_NOWAIT,  /* a = index into pc_texts: open and print, do not wait */
+    SCR_EV_TEXT_WAIT,    /* stop until the player has closed the box */
+    SCR_EV_TEXT_END,     /* close the box; the script ends here (`endtext`) */
+    SCR_EV_PLACE,        /* a = x | y << 8 (map tiles), b = object id (`moveobject`) */
+    SCR_EV_RELOADMAP,    /* rebuild the current map where the player stands */
     SCR_EV_UNSUPPORTED,  /* a = opcode; the script cannot continue */
 } ScrEvent;
 
@@ -75,6 +82,8 @@ typedef struct {
     ScrScenes scene;   /* the running map's scene state, owned by the caller */
     uint16_t pending;  /* text owed after a `faceplayer` in a showtextfaceplayer */
     uint8_t ending;    /* a `jumptext` was the last command: end after its text */
+    uint16_t defer;    /* `sdefer`: the script to run once this one ends */
+    uint8_t has_defer;
 } ScrVm;
 
 /* `at` is an offset inside `code` — a label offset from gen/scripts.h.
@@ -102,5 +111,10 @@ void scr_flag_set(uint8_t *flags, uint16_t nflags, uint16_t id, int on);
 
 /* Run until the script ends or needs something done. */
 ScrRun scr_vm_next(ScrVm *vm, ScrOut *out);
+
+/* A `sdefer` script the finished one left behind: returns 1 and reports its
+ * offset once, then forgets it. The caller runs it after this script ends, the
+ * way the original's wDeferredScriptAddr does between script frames. */
+int scr_vm_deferred(ScrVm *vm, uint16_t *at);
 
 #endif

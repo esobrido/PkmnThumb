@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **27 hechos · 8 parciales · 58 pendientes** (el conteo incluye las tablas
+Progreso: **28 hechos · 8 parciales · 57 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -218,15 +218,15 @@ Objetivo: el mundo deja de ser un decorado.
 | Tarea | Detalle | Tam |
 |---|---|---|
 | SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 767 B tras sumar los 259 B de movimiento de SCR-06, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
-| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales), `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
-| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y los NPCs cuyo script pasa por `special`, `jumpstd`, `readvar` o batalla, que todavía paran la VM (SCR-02); el movimiento ya no es límite desde SCR-06, así que el recuento de cuántos quedan hay que re-medirlo |
+| SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales, y desde 0.17.0 el texto continuo de cutscene: `writetext`, `waitbutton`, `promptbutton`, `endtext`, `waitendtext`, `jumpopenedtext` y sus `if*`), `turnobject`/`faceplayer`/`appear`/`disappear`, `moveobject`/`reloadmap`/`sdefer`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar`/`loadvar`, `yesorno`, `showemote` y las entregas de objetos o Pokémon devuelven `SCR_EV_UNSUPPORTED` y paran |
+| SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y los NPCs cuyo script pasa por `special`, `jumpstd`, `readvar` o batalla, que todavía paran la VM (SCR-02). Medido por `test_script_vm` desde 0.17.0: de los 32 objetos con script, **25 llegan ya a su primer texto** (antes 19) y 7 se paran antes |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | ✅ puertas y warp carpets en los 8 mapas, y **conexiones**: `ow/connect` cruza el borde en las 4 direcciones aplicando el `offset` del original; el extractor valida que las dos orillas compartan celda andable y deja sólidos los bordes que llevan a mapas fuera del build (`-> Route27`, `-> Route30`, `-> CherrygroveBay`, `-> Route46`). Verificado andando New Bark Town → Ruta 29 → Ciudad Cerezo (dos `connect:` en el log, capturas en `artifacts/`) |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
 | SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.12.0) y VM que lo ejecuta (0.10.0) | 🟡 |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M | ✅ las 18 escenas de los 5 mapas que tienen tabla y los 23 `coord_event`, disparados al terminar el paso sobre su celda; `setscene`/`setmapscene`/`checkscene`/`checkmapscene` en la VM (con el 0 que `checkscene` lee como "ninguna"). Verificado andando: la maestra de New Bark Town para al jugador con `Text_WaitPlayer` y su escena corre hasta el final (gracias a SCR-06, que le da el movimiento) |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M | ✅ 56 bloques de movimiento (259 B) dentro del blob de cada mapa, como offsets detrás de las etiquetas de script, con los bloques que caen por fallthrough concatenados; `applymovement`/`applymovementlasttalked`/`applyonemovement` (pasos inline hasta el `step_end`) y `follow`/`stopfollow` en la VM. Verificado: la cutscene de la maestra de New Bark Town corre entera — 4 pasos hacia el jugador, texto, 4 pasos de vuelta siguiéndola, texto — y el log acaba en `script: stopped at 0x0f` (`special RestartMapMusic`); `artifacts/scr06.png` |
-| SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |
+| SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M | ✅ el movimiento ya estaba con SCR-06; lo que faltaba era lo que ocurre *entre* pasos y ya está en la VM: `writetext` imprime y **sigue** (la caja queda abierta, el guion no se congela), `waitbutton`/`promptbutton` esperan a que el jugador la cierre, `endtext`/`waitendtext` cierran y acaban, `moveobject` coloca un objeto en otra celda sin andar, `reloadmap` recarga el mapa bajo el jugador y corta el guion, `sdefer` encola un guion para después y `reanchormap` se consume sin efecto (el mapa es estático). Verificado: la cutscene de la maestra sigue corriendo entera (`artifacts/scr06.png`) y Elm ya habla desde su bytecode —su script empieza por `checkevent` + `iftrue_jumpopenedtext` y el log ya no escribe `script: stopped`— con la receta de `docs/05` |
 | SCR-08 | Día/noche con RTC y cambio de paletas | M |
 
 **Puerta F2**: recorrer New Bark Town → Ruta 29 → Cherrygrove con warps reales, hablar
@@ -237,9 +237,9 @@ y las dos conexiones al oeste (New Bark Town ↔ Ruta 29, Ruta 29 ↔ Ciudad Cer
 cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log deja
 `connect: Route29` y `connect: CherrygroveCity` por el camino. Hablar con Elm ya salía de
 su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta: los
-`coord_event` disparan y la cutscene de la maestra ya **se completa** (SCR-06); lo que
-queda es SCR-07 (mover la cámara desde script) y los `special`/`jumpstd` que aún paran la
-VM.
+`coord_event` disparan, la cutscene de la maestra **se completa** (SCR-06) y las cutscenes
+ya tienen texto continuo y `moveobject` (SCR-07); queda SCR-08 (día/noche, que arrastra
+SYS-05: la API de Mote no da reloj) y los `special`/`jumpstd`/`readvar` que aún paran la VM.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 

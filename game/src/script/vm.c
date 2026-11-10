@@ -82,6 +82,8 @@ void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
     vm->scene.map_count = 0;
     vm->pending = SCR_TEXT_NONE;
     vm->ending = 0;
+    vm->defer = 0;
+    vm->has_defer = 0;
     for (int i = 0; i < SCR_STACK_MAX; i++) {
         vm->stack[i] = 0;
     }
@@ -284,6 +286,7 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
         case PCS_JUMPTEXT:
         case PCS_JUMPTHISTEXT:
         case PCS_JUMPTHISOPENEDTEXT:
+        case PCS_JUMPOPENEDTEXT:
             at = word(vm);
             if (vm->dead) {
                 return SCR_RUN_ERROR;
@@ -303,16 +306,22 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
 
         /* The `if*_jumptext` variants test hScriptVar and otherwise skip the
          * pointer: same two bytes, different meaning. */
+        /* `*_jumpopenedtext` is the same jump with the box opened first, which
+         * the port's textbox does anyway (textbox_open), so it reads its text
+         * exactly like the `*_jumptext` variants. */
         case PCS_IFTRUE_JUMPTEXT:
         case PCS_IFTRUE_JUMPTEXTFACEPLAYER:
         case PCS_IFFALSE_JUMPTEXT:
         case PCS_IFFALSE_JUMPTEXTFACEPLAYER:
+        case PCS_IFTRUE_JUMPOPENEDTEXT:
+        case PCS_IFFALSE_JUMPOPENEDTEXT:
             at = word(vm);
             if (vm->dead) {
                 return SCR_RUN_ERROR;
             }
             if ((vm->cond != 0) == (op == PCS_IFTRUE_JUMPTEXT ||
-                                    op == PCS_IFTRUE_JUMPTEXTFACEPLAYER)) {
+                                    op == PCS_IFTRUE_JUMPTEXTFACEPLAYER ||
+                                    op == PCS_IFTRUE_JUMPOPENEDTEXT)) {
                 if (op == PCS_IFTRUE_JUMPTEXTFACEPLAYER ||
                         op == PCS_IFFALSE_JUMPTEXTFACEPLAYER) {
                     vm->pending = at;
@@ -324,6 +333,32 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
                 return event(out, SCR_EV_TEXT, at, 0);
             }
             break;
+
+        /* Script_writetext: MapTextbox. It opens the box and prints, and the
+         * script carries on — the GB prints the whole text before returning, and
+         * a script that wants the player to read it says `waitbutton` next. */
+        case PCS_WRITETEXT:
+            at = word(vm);
+            if (vm->dead) {
+                return SCR_RUN_ERROR;
+            }
+            return event(out, SCR_EV_TEXT_NOWAIT, at, 0);
+
+        /* Script_waitbutton / Script_promptbutton: wait for A/B. The box owns its
+         * own paging here, so "read to the end" is the same wait. */
+        case PCS_WAITBUTTON:
+        case PCS_PROMPTBUTTON:
+            return event(out, SCR_EV_TEXT_WAIT, 0, 0);
+
+        /* Script_endtext: closetext, then end. Script_waitendtext is the same
+         * with a wait in front of it. */
+        case PCS_ENDTEXT:
+            vm->ending = 1;
+            return event(out, SCR_EV_TEXT_END, 0, 0);
+
+        case PCS_WAITENDTEXT:
+            vm->ending = 1;
+            return event(out, SCR_EV_TEXT_WAIT, 0, 0);
 
         case PCS_OPENTEXT:         /* Script_opentext */
             return event(out, SCR_EV_TEXT_OPEN, 0, 0);
@@ -426,6 +461,41 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
         case PCS_STOPFOLLOW:
             return event(out, SCR_EV_STOPFOLLOW, 0, 0);
 
+        /* Script_moveobject: person, x, y in map tiles, placed as if the map
+         * object had been defined at those coordinates. The `+ 4` in the original
+         * is its 4-tile border, which this port does not carry. */
+        case PCS_MOVEOBJECT:
+            {
+                uint8_t who = byte(vm);
+                uint8_t ox = byte(vm);
+                uint8_t oy = byte(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                return event(out, SCR_EV_PLACE, (uint16_t)(ox | (oy << 8)), who);
+            }
+
+        /* Script_reanchormap: points the GB at the map data it keeps in a bank.
+         * Here the map is a static table, so there is nothing to re-anchor. */
+        case PCS_REANCHORMAP:
+            break;
+
+        /* Script_reloadmap: reload the map under the player's feet and stop the
+         * script (MapSetup_ReloadMap in the original). */
+        case PCS_RELOADMAP:
+            vm->ending = 1;
+            return event(out, SCR_EV_RELOADMAP, 0, 0);
+
+        /* Script_sdefer: stash a script to run after this one, so a cutscene can
+         * queue its follow-up (an NPC handing over an item) without nesting. */
+        case PCS_SDEFER:
+            vm->defer = word(vm);
+            if (vm->dead) {
+                return SCR_RUN_ERROR;
+            }
+            vm->has_defer = 1;
+            break;
+
         case PCS_SETLASTTALKED:    /* Script_setlasttalked: nothing to store */
             (void)byte(vm);
             if (vm->dead) {
@@ -463,4 +533,15 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
             return event(out, SCR_EV_UNSUPPORTED, op, 0);
         }
     }
+}
+
+int scr_vm_deferred(ScrVm *vm, uint16_t *at) {
+    if (!vm || !vm->has_defer) {
+        return 0;
+    }
+    vm->has_defer = 0;
+    if (at) {
+        *at = vm->defer;
+    }
+    return 1;
 }

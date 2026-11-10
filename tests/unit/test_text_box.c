@@ -440,6 +440,18 @@ static void test_truncated_command_does_not_read_past_the_end(void) {
     assert(strcmp(line, "a") == 0);
 }
 
+/* `closetext` from a script: the box goes away even mid-page. */
+static void test_close() {
+    TextBox b;
+    const uint8_t text[] = { 'H', 'i', 0x50 };
+    textbox_open(&b, text, (int)sizeof text, NULL);
+    assert(textbox_is_open(&b));
+    textbox_close(&b);
+    assert(!textbox_is_open(&b));
+    textbox_close(&b);                      /* closing twice is not a crash */
+    assert(!textbox_is_open(&b));
+}
+
 int main(void) {
     test_short_line();
     test_reflow_wraps_at_words();
@@ -456,6 +468,7 @@ int main(void) {
     test_commands_with_arguments_are_skipped();
     test_commands_that_print_nothing();
     test_truncated_command_does_not_read_past_the_end();
+    test_close();
     printf("text/box: ok\n");
     return 0;
 }

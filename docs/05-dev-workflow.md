@@ -72,6 +72,7 @@ frame. Ejemplos:
 | Ver el interior de un mapa sin andar | `a:2-5,rb:10-13,rb:20-23,rb:30-33` (RB cicla: 3 = laboratorio de Elm, 4 = casa del jugador…) |
 | **Que la maestra te pare** al salir de casa | `a:60-64,left:75-400,up:410-520,right:530-634,up:640-900,left:910-1200` con `MOTE_DT_MS=16`; en pantalla sale `Wait, CHRIS!` (captura `artifacts/scene_teacher.png`) |
 | **Ver la cutscene entera de la maestra** (0.16.0) | la anterior más `a:1305-1309` (cierra el primer texto), `a:1560-1564` (el segundo, ya con la maestra al lado), `a:1750-1754` y `a:1810-1814,a:1860-1864,a:1910-1914,a:1960-1964,a:2010-2014,a:2060-2064` (las páginas de `It's dangerous…`). Corre 4 pasos hacia ti, te habla, vuelve 4 pasos y **tú la sigues**, y el log acaba en `script: stopped at 0x0f` (`special RestartMapMusic`, lo último del script). Captura: `artifacts/scr06.png` |
+| **Hablar con Elm y ver su texto salir del bytecode** (0.17.0) | `a:60-64,rb:100-104,rb:140-144,rb:180-184,up:220-460,right:500-540,down:560-620,a:700-704` con `MOTE_DT_MS=16`: entra al laboratorio con RB (3 mapas), sube hasta la pared, una celda a la derecha y empuja hacia abajo contra Elm; la caja dice `If a wild Pokémon appears, …` y **el log no escribe `script: stopped`**, que es lo que distingue el bytecode del texto plano de reserva |
 | Ver que los NPCs con patrón se mueven solos | `a:60-64` y comparar frames separados: el chaval de (7,15) entra andando en el borde izquierdo entre los frames 300 y 500 (`artifacts/walk_npcs.png`). Con el jugador quieto cualquier píxel que cambie es un NPC |
 | **Cruzar andando a la Ruta 29** (salir del pueblo por el oeste) | la anterior con la ventana `left:910-1520` y un `a:1240-1246` para pasar el texto de la maestra; el log dice `connect: Route29` |
 | **New Bark Town → Ruta 29 → Ciudad Cerezo** andando | la anterior más `down:1525-1630,left:1650-1672,down:1692-1714,left:1734-1906,up:1926-1964,left:1984-2089,up:2109-2164,left:2184-2306,up:2326-2348,left:2368-2590,up:2610-2682,left:2702-2824,left:2844-2904` (las ventanas van 120 frames más tarde que antes de las escenas: el texto de la maestra congela el mundo); dos `connect:` (Ruta 29 y Ciudad Cerezo) |
@@ -176,7 +177,7 @@ perf fps=60 update_us=120 raster_us=830 flush_us=210 core0%=42 core1%=38
 | `fps` | ~487 (sin límite de vsync) | **sin medir** |
 | `raster_us` | 20 | **sin medir** |
 | `update_us` | 0 (por debajo de la resolución del temporizador) | **sin medir** |
-| `.mote` | — | 82 196 B, `.bss` 3 776 B |
+| `.mote` | — | 82 752 B, `.bss` 3 784 B |
 | Fundido de puerta (16 384 px, nivel 1-9) | 61 µs | **sin medir** (~0,7 ms estimados por reloj) |
 
 El fundido se mide aparte porque sólo ocurre dentro de una puerta: un banco de 300
@@ -199,18 +200,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.16.0.mote` | el módulo que se copia al dispositivo (82 196 B) |
+| `PolishedCrystal-0.17.0.mote` | el módulo que se copia al dispositivo (82 752 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.16.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.17.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.16.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.17.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.16.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.17.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

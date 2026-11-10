@@ -254,16 +254,20 @@ Tres decisiones de forma:
 Lo que hay: control de flujo (`sjump`, `scall`, `ifequal`, `iftrue`, `iffalse`, `end`,
 `endcallback`), flags y eventos (`checkflag`, `setflag`, `clearflag`, `checkevent`,
 `setevent`, `clearevent`), texto (`showtext`, `showtextfaceplayer`, `opentext`,
-`closetext`), mundo (`turnobject`, `faceplayer`, `disappear`, `appear`, `playsound`,
-`pause`, `setlasttalked`), escenas (`checkscene`, `setscene`, `checkmapscene`,
-`setmapscene`) y `waitsfx` como no-op.
+`closetext`, `writetext`, `waitbutton`, `promptbutton`, `endtext`, `waitendtext` y las
+familias `jumptext*`/`if*_jumptext*`/`jumpopenedtext`/`if*_jumpopenedtext`), mundo
+(`turnobject`, `faceplayer`, `disappear`, `appear`, `playsound`, `pause`,
+`setlasttalked`, `moveobject`, `reloadmap`, y `reanchormap` como no-op porque el mapa es
+una tabla estática), movimiento (`applymovement`, `applymovementlasttalked`,
+`applyonemovement`, `follow`, `stopfollow`), escenas (`checkscene`, `setscene`,
+`checkmapscene`, `setmapscene`), `sdefer` y `waitsfx` como no-op.
 
 Lo que falta, y se dice en voz alta: **un opcode que la VM no conoce no se interpreta a
 medias**. Devuelve `SCR_EV_UNSUPPORTED` con su número y la VM se marca muerta, porque sus
 argumentos tienen longitudes distintas por comando y seguir leyendo sería interpretar
 datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `special`,
-`jumpstd`, `readvar` y los movimientos de otros objetos esperan a los sistemas que los
-usan.
+`jumpstd`, `readvar`/`loadvar`, `yesorno`, `showemote` y las entrega de Pokémon u
+objetos esperan a los sistemas que los usan.
 
 ### Hablar, leer un cartel: los dos acaban en la VM
 
@@ -289,6 +293,11 @@ hace lo que el evento pide y vuelve a llamar,
 | Evento | Qué hace el port |
 |---|---|
 | `SCR_EV_TEXT` | abre el textbox con ese índice y deja **esperando** a la VM |
+| `SCR_EV_TEXT_NOWAIT` | abre y escribe el texto y **sigue**: es `writetext`, el guion continúa con la caja puesta |
+| `SCR_EV_TEXT_WAIT` | el guion espera a que el jugador termine el texto (`waitbutton`/`promptbutton`) |
+| `SCR_EV_TEXT_END` | cierra la caja y el guion acaba ahí (`endtext`) |
+| `SCR_EV_PLACE` | coloca un objeto en otra celda sin andar (`moveobject`) |
+| `SCR_EV_RELOADMAP` | recarga el mapa bajo el jugador y para el guion (`reloadmap`) |
 | `SCR_EV_FACE` | gira el actor (o lo calcula, si es "hacia el jugador") |
 | `SCR_EV_TEXT_OPEN`/`_CLOSE` | nada: el port abre una caja por texto |
 | `SCR_EV_SOUND`, `_DELAY` | nada todavía (audio es TXT-10) |
@@ -302,10 +311,11 @@ qué offset le pasa a `scr_vm_start`.
 Esa última fila es la decisión que importa: un comando que el port no ejecuta no deja al
 NPC mudo a media frase. El script se detiene, se anota el opcode en el log (`script:
 stopped at 0x1e`) y se muestra el texto que `first_text_ref` extrajo para ese objeto, que
-es el comportamiento que tenía el port antes de tener VM. Medido: de los 32 objetos con
-script, 19 llegan a un texto y 13 se paran en el primero (cinco de la madre, que empieza por
-`readvar`); de los 19, quince coinciden con el texto plano y cuatro no, porque su primer
-texto depende de un evento (la maestra de New Bark Town elige entre tres).
+es el comportamiento que tenía el port antes de tener VM. Medido, tras portar el texto
+continuo y `moveobject` (0.17.0): de los 32 objetos con script, **25 llegan a un texto** y 7
+se paran en el primero (`readvar`, `special` o batalla); de los 25, **veinte coinciden** con
+el texto plano y cinco no, porque su primer texto depende de un evento (la maestra de New
+Bark Town elige entre tres).
 
 Los flags y eventos están en **un solo array** de `PC_SCRIPT_FLAG_BYTES` (222 B en este
 build, el índice más alto que tocan los scripts), porque la VM recibe un puntero y un
@@ -461,6 +471,41 @@ el jugador siguiéndola, tercer texto — y el log termina en `script: stopped a
 es `special RestartMapMusic`, lo último del script (`artifacts/scr06.png`). Los NPCs con
 patrón se mueven solos en New Bark Town y Ciudad Cerezo.
 
+## Cutscenes: texto continuo, `moveobject` y `sdefer`
+
+Una cutscene del original es una sola lista de comandos: gira, mueve, imprime, espera,
+vuelve a mover. El port ya tenía el movimiento; lo que faltaba era **todo lo demás que
+ocurre entre paso y paso**, y son cuatro cosas:
+
+- **`writetext` no espera.** `showtext` abre la caja y deja la VM parada hasta que el
+  jugador la cierra; `writetext` (134 usos en los scripts del build) abre, escribe y
+  **sigue**, porque el original imprime el texto entero dentro de la misma llamada. El
+  guion continúa con la caja en pantalla y quien quiera esperar lo pide con
+  `waitbutton`/`promptbutton`. Es la diferencia entre un NPC que dice una frase y se para
+  y uno que dice una frase y sigue moviéndose.
+- **Esperar es "que se cierre la caja".** La caja del port pagina sola: cada A revela la
+  página o pasa a la siguiente, y el último A la cierra. Por eso `waitbutton` se implementa
+  como "espera a que la caja se cierre", que es la misma señal que ya usaba `showtext`.
+  Diferencias con el original, dichas: `promptbutton` no deja la caja abierta, y un
+  `waitbutton` sin caja abierta se da por cumplido en vez de pedir un botón. Todo guion
+  real llega al `waitbutton` con algo escrito delante.
+- **`moveobject` no anda: aparece en la celda.** `moveobject person, x, y` coloca al
+  objeto en una celda (x, y en tiles del mapa, sin el borde de 4 que suma el original); el
+  port lo hace con `ow_actor_init` y rehace la capa de celdas. Es cómo el rival aparece al
+  lado del jugador antes de que empiece la conversación.
+- **`sdefer` encola un guion.** No ejecuta nada: deja el offset en la VM
+  (`scr_vm_deferred`) y el despachador lo arranca cuando el actual termina, con un tope de
+  cuatro niveles para que un guion que se encola a sí mismo no cuelgue. `reloadmap` es lo
+  contrario: recarga el mapa bajo el jugador y **corta** el guion.
+
+`reanchormap` se consume sin efecto: en el GB apunta la ventana de banco a los datos del
+mapa, y aquí el mapa es una tabla estática en XIP. Igual que `waitsfx`, es un no-op
+honesto, no un comando olvidado.
+
+La prueba que se usa es la de la maestra (movimiento) y Elm: su script empieza con
+`checkevent` + `iftrue_jumpopenedtext`, y desde 0.17.0 su primer texto sale del bytecode en
+vez del texto plano de reserva — el log ya no escribe `script: stopped at 0xb6`.
+
 ## Geometría y viewport
 
 ```
@@ -476,20 +521,23 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **82 196 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 776 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor)) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **82 752 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 784 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor) + el `sdefer` pendiente) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 82 196 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 82 752 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente, el menú y desde 0.16.0
 los **56 bloques de movimiento**. De los 4 500 B que crece el módulo desde 0.15.0
 (77 668 → 82 196), 259 B son bytes de movimiento dentro de los blobs; el resto es el
 intérprete (`ow/move.c` mide 512 B de `.text`), lo que se añade a `ow/actor.c`, el glue de
-`game.c` y las tablas de etiquetas `Movement_*`. El presupuesto de flash no es
+`game.c` y las tablas de etiquetas `Movement_*`. La 0.17.0 añade 556 B más
+(82 196 → 82 752, `script/vm.c` mide 2 968 B de `.text`): el texto continuo, `moveobject`,
+`reloadmap` y el `sdefer`, que no llevan datos nuevos —todo son opcodes ya presentes en
+los blobs— sino código de la VM y del despachador. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

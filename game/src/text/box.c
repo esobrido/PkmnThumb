@@ -352,6 +352,8 @@ void textbox_advance(TextBox *b) {
     else b->open = 0;
 }
 
+void textbox_close(TextBox *b) { b->open = 0; }
+
 int textbox_is_open(const TextBox *b) { return b->open; }
 int textbox_waiting(const TextBox *b) { return b->waiting; }
 

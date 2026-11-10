@@ -2642,6 +2642,347 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
         f.write("};\n\n#endif\n")
 
 
+
+# ------------------------------------------------------------------- pokemon
+def strip_macros(txt):
+    """Drop `MACRO`..`ENDM` bodies: they are not data, and their own `if`s use
+    conditions (`_NARG`) that the build-flag resolver cannot read."""
+    out, in_macro = [], False
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        if re.match(r"MACRO", code):
+            in_macro = True
+            out.append("")
+            continue
+        if code == "ENDM":
+            in_macro = False
+            out.append("")
+            continue
+        out.append("" if in_macro else line)
+    return "\n".join(out)
+
+
+def asm_source(pc, rel):
+    """A .asm with macro bodies gone and the build flags resolved."""
+    return map_build_text(strip_macros(read(os.path.join(pc, rel))), rel)
+
+
+def asm_consts(pc, rel, stop=None, start=None):
+    """constants/<rel> -> [(name, value)] in declaration order.
+
+    Only the `const_def`/`const`/`const_skip`/`const_next` forms are understood,
+    which is what the id files use; `if`/`else` are resolved first, so the
+    release build's numbering is the one that comes out. `stop` is a `DEF NAME`
+    that ends the list (the species file goes on to define form ids after its
+    NUM_SPECIES, and those are not species).
+    """
+    where = rel
+    txt = strip_macros(read(os.path.join(pc, rel)))
+    if start:
+        # A constants file often holds several tables; `start` names the comment
+        # line (or code line) the wanted one begins after.
+        idx = txt.find(start)
+        if idx < 0:
+            die("%s: marker %r not found" % (rel, start))
+        txt = txt[idx:].split("\n", 1)[1]
+    if stop:
+        # Cut before the stop: what follows renumbers the ids with expressions
+        # (`if FMOD(...)`) that are not data this port reads.
+        keep = []
+        for line in txt.splitlines():
+            if re.match(r"DEF\s+%s\b" % stop, line.split(";")[0].strip()):
+                break
+            keep.append(line)
+        txt = "\n".join(keep)
+    txt = map_build_text(txt, where)
+    val, out, in_macro = 0, [], False
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        if not code:
+            continue
+        if re.match(r"MACRO\b", code):
+            in_macro = True
+            continue
+        if code == "ENDM":
+            in_macro = False
+            continue
+        if in_macro:
+            continue
+        if stop and re.match(r"DEF\s+%s\b" % stop, code):
+            break
+        m = re.match(r"const_def(?:\s+(\S+))?$", code)
+        if m:
+            val = asm_expr(m.group(1)) if m.group(1) else 0
+            continue
+        m = re.match(r"const_skip(?:\s+(\d+))?$", code)
+        if m:
+            val += int(m.group(1) or 1)
+            continue
+        m = re.match(r"const_next\s+(\S+)$", code)
+        if m:
+            val = asm_expr(m.group(1))
+            continue
+        m = re.match(r"const\s+(\w+)$", code)
+        if m:
+            out.append((m.group(1), val))
+            val += 1
+            continue
+        if re.match(r"(DEF|REDEF|def|redef)\s+\w+\s+EQU\b", code):
+            continue
+        die("%s: cannot read constant line %r" % (where, line.strip()))
+    if not out:
+        die("%s: no constants found" % where)
+    return out
+
+
+def asm_expr(tok):
+    """`$1f`, `24`, `%1010` -> int. Anything else is a build error."""
+    t = tok.strip()
+    if t.startswith("$"):
+        return int(t[1:], 16)
+    if t.startswith("%"):
+        return int(t[1:], 2)
+    if re.match(r"^\d+$", t):
+        return int(t)
+    die("constant expression %r is not a plain number" % tok)
+
+
+def plain_names(pc, rel, macro):
+    """`data/.../names.asm` -> the strings, in table order.
+
+    Both the species' `rawchar "Bulbasaur@"` and the moves' `li "Karate Chop"`
+    are read here; a trailing `@` is the terminator, so it is stripped.
+    """
+    txt = asm_source(pc, rel)      # a name can sit behind `if DEF(FAITHFUL)`
+    out = []
+    pat = re.compile(r'^\s*%s\s+"((?:[^"\\]|\\.)*)"' % macro, re.M)
+    for m in pat.finditer(txt):
+        name = m.group(1).replace('\\"', '"').replace("\\\\\\\\", "\\")
+        out.append(name.rstrip("@"))
+    if not out:
+        die("%s: no %s strings found" % (rel, macro))
+    return out
+
+
+def base_stats(pc, const_of):
+    """data/pokemon/base_stats/*.asm -> {species id: stats dict}.
+
+    BaseData is indexed by *base data* entries, which is the species plus its
+    alternate forms, so the first file that names a species wins: that is the
+    default form (RATTATA_PLAIN before RATTATA_ALOLAN), and it is what a wild
+    Rattata is.
+    """
+    txt = asm_source(pc, "data/pokemon/base_stats.asm")
+    files = re.findall(r'INCLUDE\s+"data/pokemon/base_stats/(\w+)\.asm"', txt)
+    if not files:
+        die("data/pokemon/base_stats.asm: no base_stats includes")
+    out, skipped = {}, 0
+    for stem in files:
+        const = stem.upper()
+        src = read(os.path.join(pc, "data/pokemon/base_stats", stem + ".asm"))
+        # The field each line holds is in its trailing comment (`; type`), which
+        # is what tells a catch rate from a base exp, so keep the comment.
+        body = [l.strip() for l in src.splitlines() if l.strip()]
+        st = {"bst": None, "types": None, "catch": None, "exp": None, "growth": None}
+        for line in body:
+            m = re.match(r"bst\s+(.+)$", line)
+            if m:
+                nums = [int(x) for x in split_args(m.group(1))]
+                if len(nums) != 7:
+                    die("base_stats/%s: bst has %d numbers" % (stem, len(nums)))
+                total, hp, atk, df, sat, sdf, spe = nums
+                if total != hp + atk + df + sat + sdf + spe:
+                    die("base_stats/%s: bst total %d != parts" % (stem, total))
+                # The macro stores them in the game's order: hp, atk, def, spe,
+                # sat, sdf (the file lists sat/sdf before spe).
+                st["bst"] = [hp, atk, df, spe, sat, sdf]
+                continue
+            m = re.match(r"db\s+([A-Z_]+)(?:\s*,\s*([A-Z_]+))?\s*;\s*type$", line)
+            if m:
+                st["types"] = [m.group(1), m.group(2) or m.group(1)]
+                continue
+            m = re.match(r"db\s+(\d+)\s*;\s*catch rate$", line)
+            if m:
+                st["catch"] = int(m.group(1))
+                continue
+            m = re.match(r"db\s+(\d+)\s*;\s*base exp$", line)
+            if m:
+                st["exp"] = int(m.group(1))
+                continue
+            m = re.match(r"db\s+(\w+)\s*;\s*growth rate$", line)
+            if m:
+                st["growth"] = m.group(1)
+                continue
+        missing = [k for k, v in st.items() if v is None]
+        if missing:
+            die("base_stats/%s: missing %s" % (stem, ", ".join(missing)))
+        # BaseData is a positional table: the file names are not constants, so
+        # the species is the longest species whose name the file starts with
+        # (`rattata_plain` -> RATTATA, `nidoran_f` -> NIDORAN_F).
+        owner = None
+        for name in sorted(const_of, key=len, reverse=True):
+            if const == name or const.startswith(name + "_"):
+                owner = name
+                break
+        if owner is None:
+            skipped += 1
+            continue
+        sid = const_of[owner]
+        if sid in out:
+            skipped += 1
+            continue
+        out[sid] = st
+    return out, skipped
+
+
+def move_table(pc):
+    """data/moves/moves.asm -> [(name, type, category, power, acc, pp, effect, chance)].
+
+    The `move` macro's arguments are animation, effect, power, type, accuracy,
+    pp, effect chance, category; the animation is not ported (no move
+    animations, BAT-08) and the effect number is kept for BAT-03.
+    """
+    where = "data/moves/moves.asm"
+    txt = asm_source(pc, where)
+    effects = dict(asm_consts(pc, "constants/move_effect_constants.asm"))
+    out = []
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        m = re.match(r"move\s+(.+)$", code)
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) != 8:
+            die("%s: move with %d fields: %r" % (where, len(a), code))
+        anim, effect, power, mtype, acc, pp, chance, cat = a
+        if effect not in effects:
+            die("%s: unknown effect %r" % (where, effect))
+        out.append({"effect": effects[effect], "power": int(power) & 0xff,
+                    "type": mtype, "acc": int(acc), "pp": int(pp),
+                    "chance": int(chance), "category": cat})
+    return out
+
+
+def emit_pokemon(path, species, types, growths):
+    """gen/pokemon.h: every species with its types, base stats and growth data.
+
+    Names share one blob with an (offset, length) pair per species: 291 separate
+    arrays would cost more in padding than the text they hold. The ids are the
+    original's, gaps included, so nothing has to be translated at run time.
+    """
+    ids = sorted(species)
+    count = ids[-1] + 1
+    blob, spans = bytearray(), {}
+    for i in ids:
+        sp = species[i]
+        spans[i] = (len(blob), len(sp["name"]))
+        blob += sp["name"]
+    with open(path, "w") as f:
+        f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
+        f.write("#ifndef PC_GEN_POKEMON_H\n#define PC_GEN_POKEMON_H\n")
+        f.write("#include <stdint.h>\n\n")
+        f.write("/* Species ids are the original's (constants/pokemon_constants.asm);\n"
+                " * ids it skips stay empty entries, so an id is never translated.\n"
+                " * 0 is \"no species\". */\n")
+        f.write("#define PC_SPECIES_COUNT %d\n" % count)
+        f.write("enum {\n")
+        for i in ids:
+            f.write("\tPC_SPECIES_%s = %d,\n" % (species[i]["const"], i))
+        f.write("};\n\n")
+        f.write("/* damage types (constants/type_constants.asm) */\n")
+        f.write("enum {\n")
+        for i, t in enumerate(types):
+            f.write("\tPC_TYPE_%s = %d,\n" % (t, i))
+        f.write("};\n\n")
+        f.write("/* growth curves (constants/growth_rate_constants.asm) */\n")
+        f.write("enum {\n")
+        for i, g in enumerate(growths):
+            f.write("\tPC_GROWTH_%s = %d,\n" % (g, i))
+        f.write("};\n\n")
+        f.write("/* name bytes, in the game's charmap (see PcSpecies.name) */\n")
+        f.write("static const uint8_t pc_species_names[%d] = {\n" % max(1, len(blob)))
+        for i in range(0, len(blob), 16):
+            f.write("\t" + ",".join("0x%02x" % b for b in blob[i:i + 16]) + ",\n")
+        f.write("};\n\n")
+        f.write("/* base[] is the game's own order: hp, atk, def, spe, sat, sdf.\n"
+                " * catch_rate is the Gen 2 catch rate; base_exp is what a KO gives. */\n")
+        f.write("typedef struct {\n"
+                "    uint16_t name;             /* offset into pc_species_names */\n"
+                "    uint8_t name_len;          /* glyphs, no terminator */\n"
+                "    uint8_t type[2];\n"
+                "    uint8_t base[6];\n"
+                "    uint8_t catch_rate;\n"
+                "    uint8_t base_exp;\n"
+                "    uint8_t growth;\n"
+                "} PcSpecies;\n\n")
+        f.write("static const PcSpecies pc_species[PC_SPECIES_COUNT] = {\n")
+        for i in range(count):
+            if i not in species:
+                f.write("\t{0,0,{0,0},{0,0,0,0,0,0},0,0,0},  /* id %d unused */\n" % i)
+                continue
+            sp = species[i]
+            noff, nlen = spans[i]
+            f.write("\t{%4d,%2d,{%2d,%2d},{%3d,%3d,%3d,%3d,%3d,%3d},%3d,%3d,%d},  /* %s */\n"
+                    % (noff, nlen, sp["types"][0], sp["types"][1],
+                       sp["base"][0], sp["base"][1], sp["base"][2], sp["base"][3],
+                       sp["base"][4], sp["base"][5], sp["catch"], sp["exp"],
+                       sp["growth"], sp["const"]))
+        f.write("};\n\n#endif\n")
+
+
+def emit_moves(path, moves, types, categories):
+    """gen/moves.h: the moves table, ids as the original numbers them (1..).
+
+    `moves` is in id order starting at 1 and carries its own name bytes. Effect
+    is the original's EFFECT_* number: the port keeps it for BAT-03, which is
+    what turns an effect into behaviour.
+    """
+    blob, spans = bytearray(), []
+    for mv in moves:
+        spans.append((len(blob), len(mv["name"])))
+        blob += mv["name"]
+    with open(path, "w") as f:
+        f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
+        f.write("#ifndef PC_GEN_MOVES_H\n#define PC_GEN_MOVES_H\n")
+        f.write("#include <stdint.h>\n\n")
+        f.write("/* move ids: 1..PC_MOVE_COUNT, 0 = no move (the original's NO_MOVE) */\n")
+        f.write("#define PC_MOVE_COUNT %d\n" % len(moves))
+        f.write("enum {\n")
+        for i, mv in enumerate(moves):
+            f.write("\tPC_MOVE_%s = %d,\n" % (mv["const"], i + 1))
+        f.write("};\n\n")
+        f.write("/* categories (constants/type_constants.asm) */\n")
+        f.write("enum {\n")
+        for i, c in enumerate(categories):
+            f.write("\tPC_CAT_%s = %d,\n" % (c, i))
+        f.write("};\n\n")
+        f.write("static const uint8_t pc_move_names[%d] = {\n" % max(1, len(blob)))
+        for i in range(0, len(blob), 16):
+            f.write("\t" + ",".join("0x%02x" % b for b in blob[i:i + 16]) + ",\n")
+        f.write("};\n\n")
+        f.write("/* power 1 means \"computed\": the game uses the constant for moves\n"
+                " * whose power comes from the effect. accuracy -1 ignores the check. */\n")
+        f.write("typedef struct {\n"
+                "    uint16_t name;             /* offset into pc_move_names */\n"
+                "    uint8_t name_len;\n"
+                "    uint8_t type;\n"
+                "    uint8_t category;\n"
+                "    uint8_t power;\n"
+                "    int8_t accuracy;\n"
+                "    uint8_t pp;\n"
+                "    uint8_t effect;            /* EFFECT_*, for BAT-03 */\n"
+                "    uint8_t chance;\n"
+                "} PcMove;\n\n")
+        f.write("static const PcMove pc_moves[PC_MOVE_COUNT + 1] = {\n")
+        f.write("\t{0,0,0,0,0,0,0,0,0},  /* no move */\n")
+        for i, mv in enumerate(moves):
+            noff, nlen = spans[i]
+            f.write("\t{%4d,%2d,%2d,%d,%3d,%4d,%3d,%3d,%3d},  /* %s */\n"
+                    % (noff, nlen, mv["type"], mv["category"], mv["power"], mv["acc"],
+                       mv["pp"], mv["effect"], mv["chance"], mv["const"]))
+        f.write("};\n\n#endif\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--maps",
@@ -2941,6 +3282,73 @@ def main():
     emit_options(opath, opts, done, charmap, ckeys)
     print("options   %d in %s: %s" % (len(opts), opath,
           ", ".join(n for _, n, _, _ in opts)))
+
+    # ---- species, types and moves -----------------------------------------
+    # The species ids are the constants' values; one id is skipped in the
+    # original (0x100) and the table keeps the hole. Names are the game's own
+    # charmap bytes, so the party screen prints them with the same font.
+    species_consts = asm_consts(pc, "constants/pokemon_constants.asm",
+                                stop="NUM_SPECIES")
+    species_id = dict(species_consts)
+    sp_names = plain_names(pc, "data/pokemon/names.asm", "rawchar")
+    if len(sp_names) != species_consts[-1][1] + 1:
+        die("species names: %d names for ids up to %d"
+            % (len(sp_names), species_consts[-1][1]))
+    stats, forms_skipped = base_stats(pc, species_id)
+    type_names = [n for n, _ in asm_consts(pc, "constants/type_constants.asm",
+                                           stop="NUM_TYPES")]
+    type_id = dict(asm_consts(pc, "constants/type_constants.asm", stop="NUM_TYPES"))
+    cats = [n for n, _ in asm_consts(pc, "constants/type_constants.asm")
+            if n in ("PHYSICAL", "SPECIAL", "STATUS")]
+    cat_id = dict(asm_consts(pc, "constants/type_constants.asm"))
+    growth_consts = asm_consts(pc, "constants/pokemon_data_constants.asm",
+                               start="wBaseGrowthRate values",
+                               stop="NUM_GROWTH_RATES")
+    growths = [n.replace("GROWTH_", "") for n, _ in growth_consts]
+    growth_id = dict(growth_consts)      # keyed by the full GROWTH_* name
+
+    species = {}
+    for name, sid in species_consts:
+        st = stats.get(sid)
+        if st is None:
+            die("%s (id %d) has no base data" % (name, sid))
+        for t in st["types"]:
+            if t not in type_id:
+                die("%s: unknown type %r" % (name, t))
+        if st["growth"] not in growth_id:
+            die("%s: unknown growth rate %r" % (name, st["growth"]))
+        species[sid] = {"const": name,
+                        "name": encode_text(sp_names[sid], charmap, ckeys),
+                        "types": [type_id[t] for t in st["types"]],
+                        "base": st["bst"], "catch": st["catch"],
+                        "exp": st["exp"], "growth": growth_id[st["growth"]]}
+    ppath = os.path.join(out, "pokemon.h")
+    emit_pokemon(ppath, species, type_names, growths)
+    print("species   %d in %s (%d KB, %d forms skipped)"
+          % (len(species), ppath, os.path.getsize(ppath) // 1024, forms_skipped))
+
+    mv_txt = move_table(pc)
+    mv_consts = [n for n, _ in asm_consts(pc, "constants/move_constants.asm",
+                                          stop="NUM_ATTACKS")]
+    mv_names = plain_names(pc, "data/moves/names.asm", "li")
+    if len(mv_txt) != len(mv_names) or len(mv_txt) + 1 != len(mv_consts):
+        die("moves: %d move rows, %d names, %d ids (ids include NO_MOVE)"
+            % (len(mv_txt), len(mv_names), len(mv_consts)))
+    moves = []
+    for i, mv in enumerate(mv_txt):
+        if mv["type"] not in type_id:
+            die("move %s: unknown type %r" % (mv_consts[i + 1], mv["type"]))
+        if mv["category"] not in cat_id:
+            die("move %s: unknown category %r" % (mv_consts[i + 1], mv["category"]))
+        moves.append({"const": mv_consts[i + 1],
+                      "name": encode_text(mv_names[i], charmap, ckeys),
+                      "type": type_id[mv["type"]], "category": cat_id[mv["category"]],
+                      "power": mv["power"], "acc": mv["acc"], "pp": mv["pp"],
+                      "effect": mv["effect"], "chance": mv["chance"]})
+    mvh = os.path.join(out, "moves.h")
+    emit_moves(mvh, moves, type_names, cats)
+    print("moves     %d in %s (%d KB)" % (len(moves), mvh,
+                                          os.path.getsize(mvh) // 1024))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,9 @@
 #include <stdio.h>
 
 #include "gen/font.h"
+#include "gen/moves.h"
 #include "gen/options.h"
+#include "gen/pokemon.h"
 #include "gen/text.h"
 #include "text/font.h"
 #include "gen/world.h"
@@ -133,7 +135,85 @@ int main(void) {
     }
     assert(pc_option_done.len == 4);
 
-    printf("gen data: %d texts, %d maps, %d talkers, %d font tiles\n",
-           PC_TEXT_COUNT, PC_MAP_COUNT, talkers, PC_FONT_TILES);
+    /* ---- species ---- */
+    /* The ids are the original's (constants/pokemon_constants.asm): 1..291 with
+     * the `const_skip` at 0x100 left empty, so a species id is never translated
+     * and a gap can never hide a shifted table. */
+    assert(PC_SPECIES_COUNT == 292);
+    assert(PC_SPECIES_BULBASAUR == 1);
+    assert(PC_SPECIES_PIKACHU == 25);
+    assert(PC_SPECIES_MEWTWO == 150);
+    assert(PC_SPECIES_CHIKORITA == 152);
+    int species = 0;
+    for (int i = 1; i < PC_SPECIES_COUNT; i++) {
+        const PcSpecies *sp = &pc_species[i];
+        if (sp->base[0] == 0) {
+            assert(i == 256);            /* the only hole in the id space */
+            continue;
+        }
+        species++;
+        /* A name is charmap bytes inside the blob, never empty, never over the
+         * ten glyphs a name box holds. */
+        assert(sp->name + sp->name_len <= sizeof pc_species_names);
+        assert(sp->name_len > 0 && sp->name_len <= 10);
+        for (int k = 0; k < sp->name_len; k++) assert(pc_species_names[sp->name + k] != 0);
+        assert(sp->type[0] < PC_TYPE_UNKNOWN_T);
+        assert(sp->type[1] < PC_TYPE_UNKNOWN_T);
+        for (int k = 0; k < 6; k++) assert(sp->base[k] > 0);
+        assert(sp->catch_rate > 0);
+        assert(sp->base_exp > 0);
+        assert(sp->growth <= PC_GROWTH_SLOW);
+    }
+    assert(species == 290);
+
+    /* Three facts that would go wrong first if the extractor shifted rows:
+     * Bulbasaur's stats and dual type, the repeated slot of a one-type species,
+     * and the form rule (Rattata's plain form wins over its Alolan one). */
+    const PcSpecies *bulba = &pc_species[PC_SPECIES_BULBASAUR];
+    assert(bulba->name_len == 9);                        /* "Bulbasaur" */
+    assert(bulba->base[0] == 45 && bulba->base[1] == 49 && bulba->base[4] == 65);
+    assert(bulba->type[0] == PC_TYPE_GRASS && bulba->type[1] == PC_TYPE_POISON);
+    assert(bulba->growth == PC_GROWTH_MEDIUM_SLOW);
+    const PcSpecies *pika = &pc_species[PC_SPECIES_PIKACHU];
+    assert(pika->type[0] == PC_TYPE_ELECTRIC && pika->type[1] == PC_TYPE_ELECTRIC);
+    const PcSpecies *rattata = &pc_species[PC_SPECIES_RATTATA];
+    assert(rattata->base[0] == 30 && rattata->base[1] == 56);
+    assert(rattata->base[2] == 35 && rattata->base[3] == 72);
+    assert(rattata->base[4] == 25 && rattata->base[5] == 35);
+
+    /* ---- moves ---- */
+    /* 255 moves after the build's conditionals are resolved; id 0 is "no move"
+     * and the original's NUM_ATTACKS is 255, so the last id is Struggle. */
+    assert(PC_MOVE_COUNT == 255);
+    assert(PC_MOVE_TACKLE == 33);
+    assert(PC_MOVE_STRUGGLE == PC_MOVE_COUNT);
+    const PcMove *none = &pc_moves[0];
+    assert(none->power == 0 && none->pp == 0 && none->effect == 0);
+    for (int i = 1; i <= PC_MOVE_COUNT; i++) {
+        const PcMove *mv = &pc_moves[i];
+        assert(mv->name + mv->name_len <= sizeof pc_move_names);
+        assert(mv->name_len > 0 && mv->name_len <= 12);
+        /* UNKNOWN_T is a real type value here: Struggle carries it. */
+        assert(mv->type <= PC_TYPE_UNKNOWN_T);
+        assert(mv->category <= PC_CAT_STATUS);
+        assert(mv->pp > 0 && mv->pp <= 64);
+        /* -1 is the original's "never misses" (Swift, Struggle). */
+        assert(mv->accuracy == -1 || (mv->accuracy > 0 && mv->accuracy <= 100));
+        /* Only status moves may have no power, and they must have none. */
+        if (mv->category == PC_CAT_STATUS) assert(mv->power == 0);
+        else assert(mv->power > 0);
+    }
+    const PcMove *tackle = &pc_moves[PC_MOVE_TACKLE];
+    assert(tackle->power == 40 && tackle->accuracy == 100 && tackle->pp == 35);
+    assert(tackle->type == PC_TYPE_NORMAL && tackle->category == PC_CAT_PHYSICAL);
+    assert(tackle->effect == 0);                         /* EFFECT_NORMAL_HIT */
+    const PcMove *bolt = &pc_moves[PC_MOVE_THUNDERBOLT];
+    assert(bolt->power == 90 && bolt->category == PC_CAT_SPECIAL);
+    assert(bolt->type == PC_TYPE_ELECTRIC && bolt->chance == 10);
+
+    printf("gen data: %d texts, %d maps, %d talkers, %d font tiles,"
+           " %d species, %d moves\n",
+           PC_TEXT_COUNT, PC_MAP_COUNT, talkers, PC_FONT_TILES, species,
+           PC_MOVE_COUNT);
     return 0;
 }

@@ -583,6 +583,42 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   vez con `pal_npc`. De noche el mapa va azul y el jugador sigue igual. Es una diferencia
   visible, está anotada en TASKS.md y no se disimula con colores inventados.
 
+## Trampas nuevas (fase 3: especies y movimientos)
+
+- **`base_stats/` no es una tabla, es un directorio de formas.** Los 337 `INCLUDE` de
+  `data/pokemon/base_stats.asm` apuntan a `base_stats/<stem>.asm` y el fichero no dice a
+  qué especie pertenece. La especie sale del **prefijo más largo** que case con una
+  constante (`rattata_plain` → `RATTATA`, no `RATTATA_PLAIN`; `nidoran_f` →
+  `NIDORAN_F`, y ahí el `_f` no es una forma), y **gana la primera entrada**, que es la
+  forma por defecto. Quedan 47 formas fuera (Alolan, Galarian, Megas…): meterlas pide un
+  campo de forma en `Mon`, no una fila más en la tabla. Comprobación que lo delata:
+  `pc_species[RATTATA]` debe dar 30/56/35/72/25/35 (la forma normal), no los del Alolan.
+- **Contar líneas `li` de `data/moves/names.asm` da 256, y son 255.** Un nombre está
+  dentro de un `if DEF(FAITHFUL)` / `else` (Rock Smash vs. Brick Break), así que leer el
+  fichero en crudo cuenta dos para un solo id y desplaza todos los nombres a partir de
+  ahí. Hay que resolver los condicionales del build (`asm_source`) también en los
+  nombres, no sólo quitar macros. Lo mismo vale para cualquier lista con `assert_list_length`.
+- **Una lista de nombres puede tener condicionales aunque la de especies no los tenga.**
+  `data/pokemon/names.asm` no tiene ninguno, así que leerlo en crudo funciona; usar el
+  mismo lector (condicionales resueltos) para las dos listas no cuesta nada y evita que
+  la siguiente lista con `if` vuelva a desalinear una tabla en silencio.
+- **Los argumentos de la macro `move` no están en el orden de la tabla.** Son animación,
+  efecto, potencia, tipo, precisión, PP, probabilidad y **categoría al final**. Guardar
+  los ocho números en orden da una tabla que "parece" bien y falla en batalla: la
+  potencia acaba en el campo del efecto.
+- **El identificador de especie y el de movimiento no se traducen.** Se guardan los del
+  original (1..291 con el hueco de `const_skip` en `0x100`; 1..255 con 0 = `NO_MOVE`),
+  para que un número del asm signifique lo mismo en el port. El hueco se rellena con una
+  entrada vacía, no se comprime.
+- **El DV de PS no se guarda.** En Gen 2 se deriva de los bits bajos de los otros cuatro
+  (ataque, defensa, velocidad, especial), así que guardarlo permitiría combinaciones que
+  el juego no produce. `mon_recalc` lo calcula igual que `CalcPkmnStatC`, cuya fórmula
+  lleva además un `+ 1` antes de dividir entre 100 que no está en la fórmula "de libro".
+- **`pc_species` y `pc_moves` no cuestan flash mientras no las llame nadie.** 72 KB de
+  cabecera se compilan, pero el enlazador descarta el código y los datos muertos
+  (`--gc-sections`) y el `.mote` no cambia de tamaño. Eso sí: el primer `game.c` que
+  llame a `mon_init` lo mete entero, así que el salto llegará de golpe.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -615,8 +651,9 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   de partida), decide la fase con las horas del original y el grupo de paleta con la
   fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
 - Verificado: `scripts/test.sh` (22 programas unitarios y 7 escenarios, todos en verde,
-  `test_ow_move`, `test_text_box` y `test_ow_clock` incluidos),
-  build host y de device (83 776 B, `.bss` 3 808 B), las tres franjas del día en el
+  `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_mon` y `test_mon_party`
+  incluidos; 24 programas unitarios),
+  build host y de device (83 776 B, `.bss` 3 812 B), las tres franjas del día en el
   emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
   captura headless
   (`docs/img/door.png` es la secuencia exterior → blanco → interior), la cutscene completa

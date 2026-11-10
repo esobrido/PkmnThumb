@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **29 hechos · 8 parciales · 56 pendientes** (el conteo incluye las tablas
+Progreso: **31 hechos · 8 parciales · 54 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -239,16 +239,18 @@ cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log 
 su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta: los
 `coord_event` disparan, la cutscene de la maestra **se completa** (SCR-06) y las cutscenes
 ya tienen texto continuo y `moveobject` (SCR-07) y el día/noche con paletas y NPCs por
-horario (SCR-08). Con la fase cerrada, lo único que sigue parando guiones son
+horario (SCR-08). La fase 3 empieza por los datos (GAM-01) y por el mon y el equipo
+(GAM-02), que ya existen pero todavía no los usa nadie. Con la fase 2 cerrada, lo único
+que sigue parando guiones son
 `special`/`jumpstd`/`readvar`/`yesorno`, que arrastran sistemas de las fases 3 y 4, y las
 paletas OBJ/hora real (SYS-02/SYS-05) que no bloquean ninguna puerta.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 
-| Tarea | Detalle | Tam |
-|---|---|---|
-| GAM-01 | Extractor de `base_stats`, tipos, movimientos, items | L |
-| GAM-02 | Estructuras de Pokémon y equipo | M |
+| Tarea | Detalle | Tam | Estado |
+|---|---|---|---|
+| GAM-01 | Extractor de `base_stats`, tipos, movimientos, items | L | ✅ las 290 especies (ids del original, 1..291 con el hueco de 0x100), sus dos tipos, curva de crecimiento, catch rate, experiencia base y nombres; los 255 movimientos con tipo, categoría, potencia, precisión, PP, número de `EFFECT_*` y probabilidad de efecto. Los items se quedan en GAM-04: `gen/pokemon.h` (40 KB) y `gen/moves.h` (32 KB) |
+| GAM-02 | Estructuras de Pokémon y equipo | M | ✅ `mon/mon`: `Mon` (especie, nivel, DV de 16 bits, seis stats, PS, exp, cuatro movimientos con PP, estado, mote), `mon_init`/`mon_recalc` con la fórmula de `CalcPkmnStatC` y el DV de PS derivado como en Gen 2, `mon_set_move` (PP de la tabla), `mon_name` (mote o nombre de especie); `mon/party`: seis huecos en orden, `party_add`/`party_remove` (sin agujeros)/`party_heal`/`party_alive` |
 | GAM-03 | Experiencia, niveles, subida de stats | M |
 | GAM-04 | Mochila e items | M |
 | GAM-05 | Guardado/guardado completo en `save()` | M |

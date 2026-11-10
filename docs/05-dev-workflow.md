@@ -178,7 +178,7 @@ perf fps=60 update_us=120 raster_us=830 flush_us=210 core0%=42 core1%=38
 | `fps` | ~487 (sin límite de vsync) | **sin medir** |
 | `raster_us` | 20 | **sin medir** |
 | `update_us` | 0 (por debajo de la resolución del temporizador) | **sin medir** |
-| `.mote` | — | 83 776 B, `.bss` 3 808 B |
+| `.mote` | — | 83 776 B, `.bss` 3 812 B |
 | Fundido de puerta (16 384 px, nivel 1-9) | 61 µs | **sin medir** (~0,7 ms estimados por reloj) |
 
 El fundido se mide aparte porque sólo ocurre dentro de una puerta: un banco de 300
@@ -201,18 +201,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.18.0.mote` | el módulo que se copia al dispositivo (83 776 B) |
+| `PolishedCrystal-0.19.0.mote` | el módulo que se copia al dispositivo (83 776 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.18.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.19.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.18.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.19.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.18.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.19.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

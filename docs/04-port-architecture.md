@@ -231,6 +231,39 @@ tres cosas que resuelve:
 Los frames de andar usan la misma tabla de 6 frames que el jugador (`ow/dir.h`), así que
 un NPC que ande más adelante no necesita código nuevo de dibujo.
 
+## Datos de Pokémon: especies y movimientos
+
+`tools/extract.py` emite dos cabeceras más, con **los ids del original**, para que un
+número del asm (un `MON_*`, un `move`) siga significando lo mismo aquí:
+
+| Cabecera | Qué contiene |
+|---|---|
+| `gen/pokemon.h` | `pc_species[292]`: nombre (offset + longitud en un blob de charmap), los dos tipos, las seis stats base en el orden de `wBaseStats` (PS, ataque, defensa, velocidad, at. esp., def. esp.), catch rate, exp base y curva de crecimiento. También los enums de tipos (`PC_TYPE_*`, 19 valores) y de curvas (`PC_GROWTH_*`). 40 KB |
+| `gen/moves.h` | `pc_moves[256]`: nombre, tipo, categoría (física/especial/estado), potencia, precisión (`-1` = no falla), PP, el número de `EFFECT_*` para BAT-03 y la probabilidad del efecto. Id 0 = `NO_MOVE`, 1..255 los movimientos. 32 KB |
+
+Tres reglas del original que el extractor respeta y que no se pueden adivinar leyendo el
+`.asm` por encima:
+
+- **`data/pokemon/base_stats.asm` es posicional, no una lista de constantes.** Son 337
+  `INCLUDE` de ficheros `base_stats/<stem>.asm` (uno por forma) sin id dentro. La especie
+  sale del prefijo más largo que case con una constante —`rattata_plain` → `RATTATA`,
+  `nidoran_f` → `NIDORAN_F`— y **gana la primera entrada**: la forma por defecto. Las 47
+  formas restantes (Alolan, Galarian, Megas, …) se saltan y quedan para cuando haya un
+  campo de forma en `Mon`.
+- **La tabla de movimientos es una `move` por línea con los argumentos en otro orden que
+  los campos**: anim, efecto, potencia, tipo, precisión, PP, probabilidad y categoría. Se
+  guardan reordenados; el número de animación no se usa todavía.
+- **Los nombres son bytes de charmap**, no ASCII: `B` es `$81` y `a` es `$b4`. Se leen con
+  el mismo `charmap` que los textos, así que `mon_name` puede pasarlos a `text/font` sin
+  traducción.
+
+`mon/mon` y `mon/party` son las estructuras que consumen esos datos (ver
+[05](05-dev-workflow.md) para el tamaño de cada una): un `Mon` no guarda stats base ni
+tipos, igual que el original —los pide a la tabla por su especie—, y **no guarda el DV de
+PS**: lo deriva de los otros cuatro con la regla de Gen 2, así que no puede tener una
+combinación que el juego no produciría. Todavía no los usa `game.c`, así que su código
+se compila pero el enlazador lo descarta (`--gc-sections`): el `.mote` no crece.
+
 ## Texto
 
 Dos piezas, ambas puras y con test:
@@ -572,7 +605,7 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 | Recurso | Uso |
 |---|---|
 | Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **83 776 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 808 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor) + el `sdefer` pendiente + el reloj y la máscara de horario de los actores) |
+| RAM de módulo (`.bss`) | **3 812 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor) + el `sdefer` pendiente + el reloj y la máscara de horario de los actores) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
@@ -591,7 +624,9 @@ los blobs— sino código de la VM y del despachador. La 0.18.0 añade 1 024 B m
 (82 752 → 83 776): tres tablas de paleta BG completas (192 B de datos nuevos, porque el
 grupo `day` ya estaba), los ocho bytes nuevos por objeto (`time_mask`) y `ow/clock.c`,
 que mide 268 B de `.text` para llevar la hora, la fase, el grupo de paleta y la máscara
-horaria. El presupuesto de flash no es
+horaria. La 0.19.0 **no añade flash**: las tablas de especies y movimientos (72 KB de
+cabecera) y `mon/mon` (`9 402 B` de `.text` en su objeto) existen y compilan, pero no
+los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

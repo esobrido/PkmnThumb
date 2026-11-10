@@ -21,6 +21,8 @@
 
 #include <stdint.h>
 
+#include "script/scene.h"
+
 /* wScriptStackSize in the original. It has no overflow check (see docs/06);
  * here the sixth call overwrites the outermost entry instead of WRAM. */
 #define SCR_STACK_MAX 5
@@ -67,6 +69,7 @@ typedef struct {
     uint8_t dead;      /* hit an opcode this port cannot run */
     uint8_t *flags;    /* engine flags and map events, one bit each */
     uint16_t nflags;
+    ScrScenes scene;   /* the running map's scene state, owned by the caller */
     uint16_t pending;  /* text owed after a `faceplayer` in a showtextfaceplayer */
     uint8_t ending;    /* a `jumptext` was the last command: end after its text */
 } ScrVm;
@@ -76,6 +79,11 @@ typedef struct {
  * dropped; that is what the tests use for scripts that never touch a flag. */
 void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
                   uint8_t *flags, uint16_t nflags);
+
+/* Points the VM at the caller's scene bytes and says which map is running (see
+ * script/scene.h). A map with no scene table makes every scene test answer -1
+ * and `setscene` a no-op. `sc` may be NULL, and so may its `bytes`. */
+void scr_vm_set_scene(ScrVm *vm, const ScrScenes *sc);
 
 /* The script's condition register, set by the caller before a step: it is the
  * result of the check the game just ran (checkevent, checkitem, …). */

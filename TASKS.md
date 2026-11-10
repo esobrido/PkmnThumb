@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **24 hechos · 8 parciales · 61 pendientes** (el conteo incluye las tablas
+Progreso: **25 hechos · 8 parciales · 60 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -172,8 +172,8 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (76 700 B,
-`.bss` 3 384 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (77 668 B,
+`.bss` 3 428 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
 ### Fase 1 — Texto y UI (la siguiente)
@@ -224,7 +224,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
 | SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.12.0) y VM que lo ejecuta (0.10.0) | 🟡 |
-| SCR-05 | Escenas y `coord_event`/`bg_event` | M |
+| SCR-05 | Escenas y `coord_event`/`bg_event` | M | ✅ las 18 escenas de los 5 mapas que tienen tabla y los 23 `coord_event`, disparados al terminar el paso sobre su celda; `setscene`/`setmapscene`/`checkscene`/`checkmapscene` en la VM (con el 0 que `checkscene` lee como "ninguna"). Verificado andando: la maestra de New Bark Town para al jugador con `Text_WaitPlayer`; el script se detiene en `applymovement` (SCR-06) |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |
 | SCR-08 | Día/noche con RTC y cambio de paletas | M |
@@ -237,7 +237,8 @@ y las dos conexiones al oeste (New Bark Town ↔ Ruta 29, Ruta 29 ↔ Ciudad Cer
 cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log deja
 `connect: Route29` y `connect: CherrygroveCity` por el camino. Hablar con Elm ya salía de
 su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta:
-`coord_event`, movimiento de NPCs y cutscenes son SCR-05/06/07.
+movimiento de NPCs y cutscenes son SCR-06/07; los `coord_event` ya disparan y la maestra
+para al jugador, pero su cutscene no puede seguir.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 
@@ -302,7 +303,7 @@ con audio, guardado y sin caídas de fps.
 | D4 | Audio | buzzer con 2 canales / silencio + SFX | Fase 5 |
 | D5 | Ramas del contenido | Kanto completo (PC incluye Kanto) / sólo Johto | Fase 6 |
 | D6 | Guardado | 1 slot / varios con `kv_*` | Fase 3 |
-| D7 | Flags y eventos en un solo array | seguir compartido / pasarle dos arrays a la VM (`ScrVm`) | cuando un script mezcle `FLAG_x` y `EVENT_x` del mismo número, o al llegar las escenas (SCR-05) |
+| D7 | Flags y eventos en un solo array | seguir compartido / pasarle dos arrays a la VM (`ScrVm`) | cuando un script mezcle `FLAG_x` y `EVENT_x` del mismo número |
 
 ## 4. Riesgos
 

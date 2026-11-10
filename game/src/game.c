@@ -49,6 +49,7 @@
 #include "bag.h"
 #include "script/vm.h"
 #include "script/trigger.h"
+#include "script/scene.h"
 #include "text/box.h"
 #include "ui/menu.h"
 #include "ui/options.h"
@@ -59,7 +60,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.14.0");
+MOTE_GAME_VERSION("0.15.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -191,6 +192,14 @@ static ScrVm script;
 static const PcScriptMap *map_scripts;      /* the loaded map's bytecode, +-0 */
 static int script_active;
 static int script_object;                   /* actor index, for the fallback */
+static int script_slot = -1;                /* map_scripts' place in pc_script_maps */
+/* One scene byte per map, as the original keeps them in WRAM (data/maps/scenes.asm).
+ * A new game starts with every map in scene 0, which is the scene a map's first
+ * entry is, and `setscene`/`setmapscene` move it on from a script. map_scene is
+ * the loaded map's view of that array, handed to the VM and to the coord_event
+ * lookup; the tables are passed by pointer, never copied. */
+static int8_t scenes[PC_SCRIPT_MAP_COUNT];
+static ScrScenes map_scene;
 
 static const PcScriptMap *scripts_for(int index) {
     for (int i = 0; i < PC_SCRIPT_MAP_COUNT; i++) {
@@ -204,6 +213,12 @@ static void load_map_tables(int index) {
     if (index >= PC_MAP_COUNT) index = 0;
     map_index = index;
     map_scripts = scripts_for(index);
+    script_slot = map_scripts ? (int)(map_scripts - pc_script_maps) : -1;
+    map_scene.bytes = scenes;
+    map_scene.slot = (uint8_t)(script_slot < 0 ? 0 : script_slot);
+    map_scene.scene_count = map_scripts ? map_scripts->scene_count : 0;
+    map_scene.maps = pc_scene_maps;
+    map_scene.map_count = PC_SCENE_MAP_COUNT;
     script_active = 0;              /* walking into a door abandons a script */
     script_object = -1;
 
@@ -462,6 +477,18 @@ static void script_run(void) {
     }
 }
 
+/* Runs a script of the loaded map from `offset`, with the map's scene state and
+ * `obj` as the object under discussion (an actor index, or -1 when the trigger
+ * came from a cell and there is nobody to fall back to). */
+static void script_begin(uint16_t offset, int obj) {
+    script_object = obj;
+    scr_vm_start(&script, map_scripts->bytes, map_scripts->len, offset,
+                 script_flags, PC_SCRIPT_FLAG_BYTES);
+    scr_vm_set_scene(&script, &map_scene);
+    script_active = 1;
+    script_run();
+}
+
 static void try_talk(void) {
     if (player.step_left) return;
     int tx = (player.px >> 4) + dir_dx(player.dir);
@@ -470,13 +497,9 @@ static void try_talk(void) {
         if ((actors[i].px >> 4) != tx || (actors[i].py >> 4) != ty) continue;
         const PcObject *o = &pc_maps[map_index].objects[i];
         ow_actor_face(&actors[i], player.dir ^ 1);   /* face the player */
-        script_object = i;
         if (map_scripts && map_scripts->objects && i < map_scripts->object_count &&
                 map_scripts->objects[i] != 0xffff) {
-            scr_vm_start(&script, map_scripts->bytes, map_scripts->len,
-                         map_scripts->objects[i], script_flags, PC_SCRIPT_FLAG_BYTES);
-            script_active = 1;
-            script_run();
+            script_begin(map_scripts->objects[i], i);
             return;
         }
         talk_text(o);
@@ -497,11 +520,7 @@ static void try_talk(void) {
         if (!bag_add(&bag, t.item, 1)) return;
         scr_flag_set(script_flags, PC_SCRIPT_FLAG_BYTES, t.flag, 1);
     }
-    script_object = -1;                /* no NPC to fall back to */
-    scr_vm_start(&script, map_scripts->bytes, map_scripts->len, t.script,
-                 script_flags, PC_SCRIPT_FLAG_BYTES);
-    script_active = 1;
-    script_run();
+    script_begin(t.script, -1);        /* no NPC to fall back to */
 }
 
 static void g_update(float dt) {
@@ -604,6 +623,17 @@ static void g_update(float dt) {
                      player.dir, player.just_arrived, player.bumping);
         /* The edge, unless a door won the frame. A warp fades; a connection cuts. */
         if (!ow_warp_busy(&warp)) take_connection(dir_held);
+    }
+
+    /* A coord_event, last in the step's order: it fires on the frame the step
+     * ends, on the cell the player just reached, and only while the map is in
+     * the scene it names. A door on the same cell wins — the screen is already
+     * fading out — and a running script is never cut in by a new trigger. */
+    if (map_scripts && player.just_arrived && !ow_warp_busy(&warp) && !script_active) {
+        uint16_t at;
+        int scene = pc_scene_active(&map_scene);
+        if (pc_coord_event(map_scripts, player.px >> 4, player.py >> 4, scene, &at))
+            script_begin(at, -1);
     }
 
     /* Actors animate per frame, not per pixel walked: a spinner keeps turning

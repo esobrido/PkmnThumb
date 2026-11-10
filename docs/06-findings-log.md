@@ -449,6 +449,44 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   mismo update (`ow_player_update` encadena), así que la receta se cierra 2-3 frames
   antes y el paso termina solo, sin encadenar otro.
 
+## Trampas nuevas (fase 2: escenas y coord_event)
+
+- **Las escenas se declaran con dos macros, no con una.** `scene_const NAME` y
+  `scene_script Label, NAME` ocupan el mismo contador: el id es el **índice** en la tabla,
+  y `scene_script` puede ir sin nombre (`const_skip`). El extractor sólo miraba
+  `scene_const`, así que en Elm's Lab —que declara sus ocho escenas con `scene_script`—
+  cada `setscene SCENE_ELMSLAB_NOOP` acabó ensamblado como `$FF`: el script ponía la
+  escena 255 en vez de la suya. Ahora se leen las dos y una escena repetida es un error de
+  extracción.
+- **Los nombres de escena son globales aunque el byte sea por mapa.** `scene_const` hace
+  `EXPORT`, y por eso `setmapscene ROUTE_29, SCENE_ROUTE29_CATCH_TUTORIAL` (desde el
+  laboratorio) compila. Al ensamblar mapa a mapa el nombre de otro mapa quedaba como
+  externo y el byte salía `$FF`; hay que resolver las escenas de **todos** los mapas del
+  build antes de ensamblar ninguno.
+- **`map_id` en un script va (grupo, número), y `GetScriptWordBC` los intercambia.** El
+  macro emite `db GROUP_x, MAP_x`; `GetScriptWordBC` devuelve `b = l` (el primer byte) y
+  `c = h` (el segundo), o sea `b = grupo`, que es lo que compara `GetMapSceneID`. Leer la
+  palabra como little-endian normal y pasarla tal cual busca el mapa equivocado.
+- **`checkscene` trata el 0 como "ninguna escena".** `Script_checkscene` hace
+  `jr z, _NoTriggers` sobre el valor que devuelve `CheckScenes`, así que un mapa en su
+  escena 0 contesta `$FF`; `checkmapscene`, en cambio, devuelve el byte sin tocar. Es una
+  asimetría del original y se replica tal cual.
+- **Una segunda unidad que nombre las tablas generadas duplica el blob entero.** Al
+  incluir `gen/scripts.h` y tocar `pc_script_maps`, el enlazador se queda con una copia
+  completa por unidad: los 2 508 B de bytecode, todas las etiquetas con sus cadenas y las
+  tablas de objetos/bg/coords. El `.mote` pasó de 76 700 B a 81 588 B mientras los
+  símbolos sólo crecían 817 B. La solución es que `script/scene.c` y `script/vm.c` no
+  nombren nunca esa tabla: reciben un `ScrScenes` con punteros. Vuelta a 77 668 B.
+- **Un `coord_event` dispara al *terminar* el paso, y eso cambia las recetas.** El texto
+  de la maestra congela el mundo justo cuando el jugador pisa (1,9), así que las ventanas
+  de `MOTE_KEYS` posteriores llegan ~120 frames tarde y la receta de la fase 2 (New Bark →
+  Ruta 29 → Cerezo) deja de llegar. Se arregla sumando esos 120 frames a las ventanas y
+  añadiendo un `A` para pasar el texto.
+- **La maestra ya no deja salir del pueblo sin más.** Antes de SCR-05 se cruzaba el borde
+  oeste sin más; ahora su `coord_event` para al jugador y el script se detiene en
+  `applymovement` (SCR-06), así que la escena no avanza. Es el comportamiento correcto
+  para lo que hay portado, pero conviene saberlo antes de escribir una receta nueva.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -464,13 +502,15 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 ## Estado al cerrar esta fase
 
 - `tools/extract.py` extrae mapa, metatiles, atributos, colisión, tiles, paletas BG
-  (incluida la `indoor`), sprites, objetos, textos, **warps y conexiones**, y **falla con
-  mensaje claro** si los tamaños no cuadran o si una conexión no tiene orilla andable.
+  (incluida la `indoor`), sprites, objetos, textos, **warps, conexiones, escenas y
+  `coord_event`**, y **falla con mensaje claro** si los tamaños no cuadran, si una conexión
+  no tiene orilla andable o si un `coord_event` nombra una escena que no existe.
 - `game/src/game.c` renderiza 8 mapas con paleta por tile y por entorno, mueve al jugador
   en pasos de 16 px con colisión real, panea la cámara, dibuja los NPCs, **cruza
   puertas** (fundido de 10+10 frames, carga del destino y vuelta afuera por la estera) y
-  **cruza bordes entre mapas** por las conexiones, sin fundido.
-- Verificado: `scripts/test.sh` (19 programas unitarios y 7 escenarios, todos en verde,
+  **cruza bordes entre mapas** por las conexiones, sin fundido, y **dispara los
+  `coord_event`** al terminar un paso (la maestra de New Bark Town, el guía de Cerezo).
+- Verificado: `scripts/test.sh` (20 programas unitarios y 7 escenarios, todos en verde,
   `test_text_box` incluidos los 24 comandos),
   build host y de device, captura headless (`docs/img/door.png` es la secuencia
   exterior → blanco → interior), movimiento con `MOTE_KEYS` y compilación sin warnings

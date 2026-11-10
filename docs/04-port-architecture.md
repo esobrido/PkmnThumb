@@ -232,8 +232,8 @@ el del propio juego ensamblado desde sus macros. No hay traducción de scripts a
 `showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
 hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
 (`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
-del arranque suman 2 508 B de bytecode, 79 etiquetas, 32 scripts de objeto y 40 celdas
-`bg_event` (39 con script).
+del arranque suman 2 508 B de bytecode, 79 etiquetas, 32 scripts de objeto, 40 celdas
+`bg_event` (39 con script), 18 escenas en 5 mapas y 23 `coord_event`.
 
 Tres decisiones de forma:
 
@@ -254,14 +254,15 @@ Lo que hay: control de flujo (`sjump`, `scall`, `ifequal`, `iftrue`, `iffalse`, 
 `endcallback`), flags y eventos (`checkflag`, `setflag`, `clearflag`, `checkevent`,
 `setevent`, `clearevent`), texto (`showtext`, `showtextfaceplayer`, `opentext`,
 `closetext`), mundo (`turnobject`, `faceplayer`, `disappear`, `appear`, `playsound`,
-`pause`, `setlasttalked`) y `waitsfx` como no-op.
+`pause`, `setlasttalked`), escenas (`checkscene`, `setscene`, `checkmapscene`,
+`setmapscene`) y `waitsfx` como no-op.
 
 Lo que falta, y se dice en voz alta: **un opcode que la VM no conoce no se interpreta a
 medias**. Devuelve `SCR_EV_UNSUPPORTED` con su número y la VM se marca muerta, porque sus
 argumentos tienen longitudes distintas por comando y seguir leyendo sería interpretar
 datos como código. Batalla (`loadtrainer`, `startbattle`, `winlosstext`), `special`,
-`jumpstd`, `readvar` y las escenas (`checkscene`, `setscene`) esperan a los sistemas que
-las usan.
+`jumpstd`, `readvar` y los movimientos de otros objetos esperan a los sistemas que los
+usan.
 
 ### Hablar, leer un cartel: los dos acaban en la VM
 
@@ -392,6 +393,36 @@ cuenta. Por eso `OwMap` tiene una capa opcional `cells` (una por celda de 16 px)
 mapa, antes de colocar al jugador, así que nadie aparece dentro de un NPC ni lo
 atraviesa. Cuando los NPCs se muevan (OW-06) ésta es la tabla que hay que actualizar.
 
+## Escenas y `coord_event`: lo que dispara al andar
+
+`script/scene.c` es lógica pura: no conoce Mote ni el mapa cargado.
+
+```c
+int  pc_scene_active(const ScrScenes *s)          // la escena del mapa, o -1
+void pc_scene_set(ScrScenes *s, int scene)        // setscene
+int  pc_scene_slot(const ScrScenes *s, g, m)      // map_id -> hueco, o -1
+int  pc_scene_at(const ScrScenes *s, int slot)    // la escena de otro mapa
+int  pc_coord_event(sm, x, y, scene, &script)     // ¿dispara esta celda?
+```
+
+El byte de escena es uno por mapa y lo guarda `game.c` en un array (el original lo tiene
+en WRAM, `data/maps/scenes.asm`); a `ScrScenes` se le pasa **prestado**, con el hueco del
+mapa cargado y el tamaño de su tabla. Un mapa sin tabla de escenas (`PlayersNeighborsHouse`,
+`LyrasHouse1F`, `ElmsHouse`) contesta `-1` y no deja escribir: `setscene` ahí no inventa
+estado.
+
+El disparo va **el último del paso**, después de las puertas y de las conexiones, y sólo
+si el paso acaba de terminar (`player.just_arrived`), no hay fundido en marcha y no hay
+script corriendo. Es el orden del original: `CheckCurrentMapCoordEvents` se llama desde
+`DoPlayerEvent`, que es el último frame del paso. Una puerta en esa misma celda gana,
+porque la pantalla ya se está fundiendo.
+
+Verificado andando: la maestra de New Bark Town para al jugador en (1,9) con
+`Text_WaitPlayer` en pantalla (`artifacts/scene_teacher.png`), y el script se detiene en
+`applymovement` porque mover NPCs es SCR-06 — la escena no avanza y el texto vuelve a
+salir si se pisa la celda otra vez, que es exactamente lo que hace el original cuando el
+movimiento no puede ejecutarse.
+
 ## Geometría y viewport
 
 ```
@@ -407,13 +438,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **76 700 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 384 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **77 668 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 428 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 76 700 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 77 668 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

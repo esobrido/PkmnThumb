@@ -10,6 +10,7 @@
 #include "script/vm.h"
 
 #include "gen/scripts.h"
+#include "script/scene.h"
 
 /* The original's GetScriptByte. A short read is not a crash: the VM marks
  * itself dead and the caller sees SCR_RUN_ERROR. */
@@ -73,6 +74,11 @@ void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
     vm->dead = (uint8_t)(at >= len);
     vm->flags = flags;
     vm->nflags = nflags;
+    vm->scene.bytes = 0;
+    vm->scene.slot = 0;
+    vm->scene.scene_count = 0;
+    vm->scene.maps = 0;
+    vm->scene.map_count = 0;
     vm->pending = SCR_TEXT_NONE;
     vm->ending = 0;
     for (int i = 0; i < SCR_STACK_MAX; i++) {
@@ -82,6 +88,17 @@ void scr_vm_start(ScrVm *vm, const uint8_t *code, uint16_t len, uint16_t at,
 
 void scr_vm_set_cond(ScrVm *vm, uint8_t value) {
     vm->cond = value;
+}
+
+void scr_vm_set_scene(ScrVm *vm, const ScrScenes *sc) {
+    if (sc) {
+        vm->scene = *sc;
+    } else {
+        vm->scene.bytes = 0;
+        vm->scene.scene_count = 0;
+        vm->scene.maps = 0;
+        vm->scene.map_count = 0;
+    }
 }
 
 static ScrRun event(ScrOut *out, uint8_t kind, uint16_t a, uint8_t b) {
@@ -191,6 +208,55 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
             flag_set(vm, word(vm), 0);
             if (vm->dead) {
                 return SCR_RUN_ERROR;
+            }
+            break;
+
+        /* --- scenes ----------------------------------------------------- */
+        /* Script_checkscene (scripting.asm) copies CheckScenes' answer, and it
+         * treats an answer of 0 as "no triggers" as well as -1 — a new game's
+         * scene byte is 0, so a script must test it as if there was none. */
+        case PCS_CHECKSCENE:
+            {
+                int scene = pc_scene_active(&vm->scene);
+                vm->cond = (uint8_t)(scene == 0 || scene == PC_SCENE_NONE
+                                     ? 0xff : scene);
+            }
+            break;
+
+        case PCS_SETSCENE:         /* Script_setscene: this map's scene byte */
+            {
+                uint8_t scene = byte(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                pc_scene_set(&vm->scene, scene);
+            }
+            break;
+
+        /* setmapscene/checkmapscene carry `map_id`: group byte, then number. */
+        case PCS_SETMAPSCENE:      /* Script_setmapscene */
+            {
+                uint8_t group = byte(vm);
+                uint8_t number = byte(vm);
+                uint8_t scene = byte(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                int slot = pc_scene_slot(&vm->scene, group, number);
+                if (slot >= 0 && vm->scene.bytes)
+                    vm->scene.bytes[slot] = (int8_t)scene;
+            }
+            break;
+
+        case PCS_CHECKMAPSCENE:    /* Script_checkmapscene: no zero special case */
+            {
+                uint8_t group = byte(vm);
+                uint8_t number = byte(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                int slot = pc_scene_slot(&vm->scene, group, number);
+                vm->cond = (uint8_t)(slot < 0 ? 0xff : pc_scene_at(&vm->scene, slot));
             }
             break;
 

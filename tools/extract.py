@@ -717,6 +717,105 @@ def map_bg_events(pc, map_name, consts, std_order):
     return out
 
 
+def map_scenes(pc, map_name):
+    """The map's scene script table, in order -> [name or None].
+
+    `def_scene_scripts` opens the table and two macros fill it: `scene_const
+    NAME` (a scene with no script) and `scene_script Label, NAME` (a script).
+    Both take the next id, and an id *is* the index in this table: the wram byte
+    a map keeps its scene in starts at 0, so the first scene is the one a new
+    game is in. That is why `setscene 0` and "no scene yet" look the same to
+    checkscene (see script/vm.c).
+    """
+    names = []
+    inside = False
+    for line in map_source(pc, map_name).splitlines():
+        s = line.split(";")[0].strip()
+        if not s:
+            continue
+        if s.startswith("def_scene_scripts"):
+            inside = True
+            continue
+        if not inside:
+            continue
+        word = s.split(None, 1)[0]
+        if word not in ("scene_const", "scene_script"):
+            break
+        args = [x.strip() for x in split_args(s.split(None, 1)[1])]
+        if word == "scene_const":
+            if len(args) != 1:
+                die("%s: scene_const with %d fields: %r" % (map_name, len(args), s))
+            name = args[0]
+        else:
+            # `scene_script Label, NAME`: the second field is optional (the
+            # original's const_skip), and the id counts either way.
+            name = args[1] if len(args) > 1 else None
+        if name is not None and name in names:
+            die("%s: scene %s declared twice" % (map_name, name))
+        names.append(name)
+    return names
+
+
+def map_coord_events(pc, map_name, scenes, w=0, h=0):
+    """coord_event rows -> (x, y, scene id, script label), in file order.
+
+    A coord event fires when a step *ends* on its cell and the map's active
+    scene is the one it names: the original calls CheckCurrentMapCoordEvents
+    from DoPlayerEvent, which is the step's last frame. `SCENE_ALWAYS` (-1)
+    skips the scene test, and it is the only way a cell can fire on a map with
+    no scene table at all.
+    """
+    index = {n: i for i, n in enumerate(scenes) if n is not None}
+    out = []
+    for line in map_source(pc, map_name).splitlines():
+        m = re.match(r"^\s*coord_event\s+(.+)$", line.split(";")[0])
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) != 4:
+            die("%s: coord_event with %d fields: %r" % (map_name, len(a), line.strip()))
+        try:
+            x, y = int(a[0]), int(a[1])
+        except ValueError:
+            die("%s: coord_event at %r has no cell" % (map_name, line.strip()))
+        if w and h and (x >= w or y >= h):
+            die("%s: coord_event %d,%d is outside the %dx%d-cell map"
+                % (map_name, x, y, w, h))
+        if a[2] == "SCENE_ALWAYS":
+            scene = -1
+        elif a[2] in index:
+            scene = index[a[2]]
+        else:
+            die("%s: coord_event names scene %s, which is not in its scene table %s"
+                % (map_name, a[2], [n for n in scenes if n is not None]))
+        out.append((x, y, scene, a[3]))
+    return out
+
+
+def map_ids(pc):
+    """{MAP_ID const: (group, number)} from constants/map_constants.asm.
+
+    `map_id MAP` emits exactly these two bytes, and `setmapscene`/`checkmapscene`
+    carry them in the script, so the runtime needs the same table to find a
+    map's scene byte.
+    """
+    txt = read(os.path.join(pc, "constants/map_constants.asm"))
+    group, number, out = 0, 0, {}
+    for line in txt.splitlines():
+        s = line.split(";")[0].strip()
+        if not s:
+            continue
+        if s.startswith("newgroup"):
+            group += 1
+            number = 0
+            continue
+        m = re.match(r"map_const\s+(\w+)\s*,", s)
+        if m:
+            number += 1
+            out[m.group(1)] = (group, number)
+    return out
+
+
 # ---------------------------------------------------------------------- text
 # The game's text is already a bytecode: `text` starts it ($00), then the
 # charmap bytes, with $56/$57/$58/$59 for next/line/cont/para and $52 for done.
@@ -1692,7 +1791,7 @@ def const_expr(expr, consts):
 
 
 def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
-                std_blocks=None):
+                std_blocks=None, scenes=(), coords=(), scene_consts=None):
     """Assemble every script label of a map into one blob.
 
     Each entry point gets its own region, so a script can be run from its
@@ -1716,23 +1815,27 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
     blob as one more region, and a hidden item gets the two commands the
     engine's HiddenItemScript reduces to here (`opentext` then `jumptext`; the
     item and the flag are handled by the game, which sees them in PcBgEvent).
+
+    `scenes` are the map's scene names (see map_scenes) and `coords` its coord
+    events (see map_coord_events): the names become the constants `setscene`
+    takes, and each coord event's script is one more offset of this blob.
     """
     stats = {"event": -1, "flag": -1}
     blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
     header = next((body for label, body in blocks if label.endswith("_MapScriptHeader")), [])
 
-    objects, scenes, n = {}, {}, 0
+    objects, n = {}, 0
     for line in header:
         m = re.match(r"\s*const\s+(\w+)", line)
         if m:
             n += 1
             objects[m.group(1)] = n
-            continue
-        m = re.match(r"\s*scene_const\s+(\w+)", line)
-        if m:
-            scenes[m.group(1)] = len(scenes)
     consts = dict(defs["consts"])
-    consts.update(scenes)
+    # Scene ids are per map but their names are global constants (scene_const
+    # exports them), so a script may name another map's scene — Elms Lab sets
+    # Route 29's tutorial with `setmapscene ROUTE_29, SCENE_ROUTE29_...`.
+    consts.update(scene_consts or {})
+    consts.update({name: i for i, name in enumerate(scenes) if name is not None})
 
     def is_script(body):
         for line in body:
@@ -1745,7 +1848,8 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
 
     scripts = [(label, body) for label, body in blocks if is_script(body)]
     ikeys = inline_keys(map_name, blocks)
-    if not scripts and not any(spec for spec in obj_specs) and not any(e[3] for e in bg_events):
+    if (not scripts and not any(spec for spec in obj_specs)
+            and not any(e[3] for e in bg_events) and not coords):
         raise Unsupported("no script labels in the map file")
 
     def assemble(label, body, labels, locals_rel):
@@ -1964,12 +2068,22 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
         bg_flags.append(flag)
         blob += data
         extern |= ext
+    # And the coord events: each one names a script of this same file, which is
+    # already a labelled region of the blob.
+    coord_offsets = []
+    for (_, _, _, label) in coords:
+        if label not in labels:
+            missing.append(label)
+            coord_offsets.append(0xffff)
+        else:
+            coord_offsets.append(labels[label])
     if missing:
         print("scripts   %-22s script(s) not in this file: %s"
               % (map_name, ", ".join(missing)))
     return {"labels": labels, "bytes": bytes(blob), "extern": sorted(extern),
             "objects": obj_offsets, "bg": bg_offsets, "bg_flags": bg_flags,
-            "bg_events": bg_events, "stats": stats,
+            "bg_events": bg_events, "coords": coord_offsets,
+            "coord_events": coords, "scene_count": len(scenes), "stats": stats,
             "locals": sum(len(v) for v in locals_rel.values())}
 
 
@@ -2013,13 +2127,25 @@ def emit_scripts(path, per_map, defs, text_index, consts):
                 " * which is the test BGEVENT_ITEM does before it reads. */\n")
         f.write("typedef struct { uint8_t x, y, kind; uint16_t script;\n"
                 "    uint16_t flag; } PcBgEvent;\n")
+        f.write("/* A coord_event: ending a step on (x, y) runs `script` while the map's\n"
+                " * scene is `scene`, or from any scene when it is SCENE_ALWAYS (-1).\n"
+                " * `script` is $ffff when the extractor could not find the label. */\n")
+        f.write("typedef struct { uint8_t x, y; int8_t scene; uint16_t script;\n"
+                "    } PcCoordEvent;\n")
+        f.write("/* `map_id` (GROUP_x, MAP_x): what setmapscene/checkmapscene put in a\n"
+                " * script, and the only way to find another map's scene byte. `slot`\n"
+                " * is the position in pc_script_maps. */\n")
+        f.write("typedef struct { uint8_t group, number, slot; } PcSceneMap;\n")
         f.write("/* map_index is the position in pc_maps, so the game can find a map's\n"
                 " * bytecode by the map it loaded. objects[] is one script offset per\n"
-                " * object_event, bg[] one per bg_event, $ffff when there is none. */\n")
+                " * object_event, bg[] one per bg_event, coords[] one per coord_event.\n"
+                " * scene_count is the map's scene table size (0: it has none). */\n")
         f.write("typedef struct { const char *map; int8_t map_index; const uint8_t *bytes;\n"
                 "    uint16_t len; const PcScriptLabel *labels; uint16_t label_count;\n"
                 "    const uint16_t *objects; uint8_t object_count;\n"
-                "    const PcBgEvent *bg; uint8_t bg_count; } PcScriptMap;\n\n")
+                "    const PcBgEvent *bg; uint8_t bg_count;\n"
+                "    const PcCoordEvent *coords; uint8_t coord_count;\n"
+                "    uint8_t scene_count; } PcScriptMap;\n\n")
         for i, (map_name, data) in enumerate(per_map):
             f.write("static const PcScriptLabel scr%d_labels[%d] = {\n"
                     % (i, len(data["labels"])))
@@ -2045,16 +2171,36 @@ def emit_scripts(path, per_map, defs, text_index, consts):
                         % (x, y, kind, "%5d" % off if off != 0xffff else "0xffff",
                            "%5d" % fl if fl != 0xffff else "0xffff"))
             f.write("};\n\n")
+        for i, (map_name, data) in enumerate(per_map):
+            if not data["coords"]:
+                continue
+            f.write("static const PcCoordEvent scr%d_coords[%d] = {\n"
+                    % (i, len(data["coords"])))
+            for (x, y, scene, _), off in zip(data["coord_events"], data["coords"]):
+                f.write("\t{%3d, %3d, %3d, %s},\n"
+                        % (x, y, scene,
+                           "%5d" % off if off != 0xffff else "0xffff"))
+            f.write("};\n\n")
+        scene_maps = [(i, d) for i, (_, d) in enumerate(per_map) if d["scene_count"]]
+        f.write("/* the maps with a scene table, as MapScenes lists them */\n")
+        f.write("#define PC_SCENE_MAP_COUNT %d\n" % len(scene_maps))
+        f.write("static const PcSceneMap pc_scene_maps[PC_SCENE_MAP_COUNT] = {\n")
+        for i, d in scene_maps:
+            f.write("\t{%3d, %3d, %2d},\n" % (d["group"], d["number"], i))
+        f.write("};\n\n")
         f.write("#define PC_SCRIPT_MAP_COUNT %d\n" % len(per_map))
         f.write("static const PcScriptMap pc_script_maps[PC_SCRIPT_MAP_COUNT] = {\n")
         for i, (map_name, data) in enumerate(per_map):
-            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d, %s, %d },\n'
+            f.write('\t{ "%s", %d, scr%d_%s, %d, scr%d_labels, %d, %s, %d, %s, %d, '
+                    '%s, %d, %d },\n'
                     % (map_name, data["map_index"], i, map_name, len(data["bytes"]), i,
                        len(data["labels"]),
                        "scr%d_objects" % i if data["objects"] else "0",
                        len(data["objects"]),
                        "scr%d_bg" % i if data["bg"] else "0",
-                       len(data["bg"])))
+                       len(data["bg"]),
+                       "scr%d_coords" % i if data["coords"] else "0",
+                       len(data["coords"]), data["scene_count"]))
         f.write("};\n\n#endif\n")
 
 
@@ -2315,6 +2461,14 @@ def main():
     # table index; the port inlines it, so the table is read once here.
     std_blocks, std_order = std_scripts(pc, defs["consts"])
     item_names_all = item_names(pc)
+    map_ids_all = map_ids(pc)
+    # Scene constants are global in the original, and a script may set another
+    # map's scene, so every map's names resolve everywhere.
+    scene_consts = {}
+    for name in wanted:
+        for i, sn in enumerate(map_scenes(pc, name)):
+            if sn is not None:
+                scene_consts[sn] = i
 
     for map_name in wanted:
         w, h = map_dims(pc, map_name)
@@ -2445,14 +2599,21 @@ def main():
             if label not in text_index:
                 text_index[label] = len(texts_all)
                 texts_all.append((label, data))
+        # Scenes and coord events. A scene is named by the map file (`scene_const`
+        # or `scene_script`), and a coord event fires when a step ends on its cell
+        # while that scene is active; both are checked here so a typo in the .asm
+        # is an extraction error, not a trigger that silently never happens.
+        scenes = map_scenes(pc, map_name)
+        coords = map_coord_events(pc, map_name, scenes, w * 2, h * 2)
         try:
             sdata = map_scripts(pc, map_name, defs, text_index, obj_specs, bg_events,
-                                std_blocks)
+                                std_blocks, scenes, coords, scene_consts)
         except Unsupported as exc:
             print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
             sdata = None
         if sdata is not None:
             sdata["map_index"] = map_slot[map_name]
+            sdata["group"], sdata["number"] = map_ids_all[map_id(pc, map_name)]
             per_map.append((map_name, sdata))
             bytes_total += len(sdata["bytes"])
             extern_all |= set(sdata["extern"])
@@ -2463,6 +2624,10 @@ def main():
             ran = sum(1 for o in sdata["bg"] if o != 0xffff)
             print("bg        %-22s %2d cells, %d with a script"
                   % (map_name, len(bg_events), ran))
+            if scenes or coords:
+                print("scene     %-22s %2d scenes, %2d coord event(s), %d with a script"
+                      % (map_name, len(scenes), len(coords),
+                         sum(1 for o in sdata["coords"] if o != 0xffff)))
         scripts_for = sdata["objects"] if sdata is not None else [0xffff] * len(objects)
         objects = [o + (sc,) for o, sc in zip(objects, scripts_for)]
 

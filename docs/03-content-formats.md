@@ -400,6 +400,45 @@ El tipo es el byte original (`PC_BGEVENT_*` en `gen/scripts.h`), no un enum nuev
 celda dice `BGEVENT_UP` y el port lo compara con la dirección del jugador en
 `script/trigger`.
 
+### De una celda a su script: `coord_event` y las escenas
+
+Un `coord_event` es una celda que **dispara al terminar un paso sobre ella**, no al
+pulsar A: es el mecanismo de "la maestra te para al salir de casa".
+
+```asm
+\tdef_scene_scripts
+\tscene_const SCENE_NEWBARKTOWN_TEACHER_STOPS_YOU
+\tscene_const SCENE_NEWBARKTOWN_LYRA_FINAL
+\tscene_const SCENE_NEWBARKTOWN_NOOP
+
+\tdef_coord_events
+\tcoord_event  1,  8, SCENE_NEWBARKTOWN_TEACHER_STOPS_YOU, NewBarkTown_TeacherStopsYouTrigger1
+\tcoord_event 19,  6, SCENE_NEWBARKTOWN_LYRA_FINAL,         NewBarkTown_LyraFinalTrigger1
+```
+
+- **El id de escena es el índice en la tabla**, no un valor aparte: las macros
+  `scene_const NAME` y `scene_script Label, NAME` ocupan el siguiente hueco en orden de
+  fichero, empezando por 0. Una partida nueva tiene **0** en el byte de escena de todos
+  los mapas, así que la primera escena de un mapa es la que corre de salida (la maestra
+  de New Bark Town, la del guía de Cerezo…).
+- **El byte de escena vive fuera del mapa.** `data/maps/scenes.asm` (`MapScenes`) asocia
+  cada mapa con un byte de WRAM (`wNewBarkTownSceneID`, …); un mapa que no está en esa
+  tabla no tiene escena y toda pregunta por la escena contesta `-1`. Un
+  `coord_event` compara ese byte con su tercer campo, y `SCENE_ALWAYS` (`-1`) salta la
+  comparación: es la única forma de que una celda dispare en un mapa sin escenas.
+- **Los nombres de escena son constantes globales** (`scene_const` hace `EXPORT`), así
+  que un script de un mapa puede mover la escena de otro: el laboratorio de Elm hace
+  `setmapscene ROUTE_29, SCENE_ROUTE29_CATCH_TUTORIAL` y con eso se enciende el tutorial
+  de la Ruta 29 cuando el jugador sale. `setmapscene` lleva el `map_id` del destino
+  (grupo, número) delante del byte de escena.
+- **`checkscene` trata el 0 como "ninguna"** (`jr z, _NoTriggers` en
+  `Script_checkscene`), mientras que `checkmapscene` devuelve el byte tal cual. Es una
+  asimetría del original, no un descuido del port.
+
+En el build: **18 escenas en 5 mapas** (New Bark Town 3, Ruta 29 2, Ciudad Cerezo 3,
+laboratorio de Elm 8, casa del jugador 2) y **23 `coord_event`** (7 + 2 + 3 + 7 + 4), todos
+con script resuelto. Ninguno usa `SCENE_ALWAYS`.
+
 ### Texto que no tiene etiqueta
 
 `jumpthistext`, `jumpthistextfaceplayer` y `jumpthisopenedtext` imprimen **dónde está el

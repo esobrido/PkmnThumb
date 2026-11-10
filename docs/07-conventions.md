@@ -79,6 +79,7 @@ llamando a `mote build game` directamente.
 | `game/src/gfx_sprite.c` | `tests/unit/test_gfx_sprite.c` |
 | `game/src/ow/map.c` | `tests/unit/test_ow_map.c` |
 | `game/src/ow/player.c` | `tests/unit/test_ow_player.c` |
+| `game/src/ow/connect.c` | `tests/unit/test_ow_connect.c` |
 | `game/src/text/box.c` | `tests/unit/test_text_box.c` |
 | `game/src/text/font.c` | `tests/unit/test_text_font.c` |
 | `game/src/ui/list.c` | `tests/unit/test_ui_list.c` |

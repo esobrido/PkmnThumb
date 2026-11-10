@@ -17,6 +17,7 @@
  *   ow/player  the walking state machine     tests/unit/test_ow_player.c
  *   ow/actor   NPC facing, spin, Y-sort      tests/unit/test_ow_actor.c
  *   ow/render  the banded raster             tests/unit/test_ow_render.c
+ *   ow/connect walking between two maps      tests/unit/test_ow_connect.c
  *   gfx_sprite 2bpp expansion and blitting   tests/unit/test_gfx_sprite.c
  *
  * Geometry (identical to the Game Boy): a map "block" is one metatile, 32x32 px
@@ -27,7 +28,10 @@
  * Doors work like the original's: a warp event on the cell, triggered when the
  * step onto a door ends or when a doormat's direction is pushed against, then
  * 10 frames fading to white, the map swap, and 10 frames back (ow/warp, ow/fade).
- * RB/LB still jump between maps in the world table, which is a debug shortcut.
+ * Walking off an outdoor map's edge is the other way between maps, and it has no
+ * fade at all: the `connection` rows of data/maps/attributes.asm say which map is
+ * next door, and the player reappears on the opposite edge (ow/connect). RB/LB
+ * still jump between maps in the world table, which is a debug shortcut.
  */
 #include "mote_api.h"
 #include "mote_build.h"
@@ -38,6 +42,7 @@
 #include "ow/actor.h"
 #include "ow/render.h"
 #include "ow/warp.h"
+#include "ow/connect.h"
 #include "gfx_sprite.h"
 #include "gen/text.h"
 #include "gen/scripts.h"
@@ -54,7 +59,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.13.0");
+MOTE_GAME_VERSION("0.14.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -86,8 +91,9 @@ static const uint16_t pal_npc[4] = {
  * is where every capture recipe in docs/05 begins. The rest use the game's own
  * respawn point (data/maps/spawn_points.asm; Cherrygrove's is the city square),
  * and indoor maps have none, so they fall back to their first warp event, which
- * is the doormat by the door. Route 29 has neither: it is walked into across a
- * map connection, which is not ported yet. */
+ * is the doormat by the door. Route 29 has no respawn point in the game (it is
+ * walked into), so the debug jump lands on the road at its west end, where
+ * Cherrygrove arrives. */
 static void map_spawn(int index, int *x, int *y) {
     const PcMapDef *d = &pc_maps[index];
     if (index == PC_MAP_NEWBARKTOWN) {
@@ -101,7 +107,7 @@ static void map_spawn(int index, int *x, int *y) {
         return;
     }
     if (index == PC_MAP_ROUTE29) {
-        *x = 1 * OW_STEP_PX;         /* west end, where the town road arrives */
+        *x = 1 * OW_STEP_PX;         /* west end, where Cherrygrove arrives */
         *y = 6 * OW_STEP_PX;
         return;
     }
@@ -224,6 +230,39 @@ static void load_map(int index) {
     int x, y;
     map_spawn(map_index, &x, &y);
     place_player(x, y, OW_DIR_DOWN);
+}
+
+/* Map connections: the seamless way between two outdoor maps. The original
+ * streams the neighbour into the map buffer's border and scrolls it in; there is
+ * no border here, so the swap is a cut on the edge cell — the player is placed on
+ * the opposite edge of the next map, facing the way he was walking, and the held
+ * direction walks him on from there. No fade: the GB does not fade here either.
+ *
+ * The connection data also says where to land (the strip offset), and
+ * tools/extract.py refuses a connection whose two edges share no walkable cell,
+ * so a bad offset is a build error rather than an invisible wall. */
+static int take_connection(int dir_held) {
+    if (dir_held == OW_DIR_NONE || player.step_left) return 0;
+    const PcMapDef *d = &pc_maps[map_index];
+    int cx = player.px >> 4, cy = player.py >> 4;
+    if (!ow_connect_on_edge(cx, cy, d->w, d->h, dir_held)) return 0;
+    const PcConnection *c = ow_connect_at(d->conns, d->conn_count, dir_held);
+    if (!c || c->map < 0 || c->map >= PC_MAP_COUNT) return 0;
+    int px, py;
+    if (!ow_connect_land(c, pc_maps[c->map].w, pc_maps[c->map].h, cx, cy, &px, &py))
+        return 0;
+    load_map_tables(c->map);
+    place_player(px, py, dir_held);
+    /* The only trace of a cut with no fade: name the map you walked into. */
+    {
+        char line[48], *w = line;
+        for (const char *s = "connect: "; *s; s++) *w++ = *s;
+        for (const char *s = pc_maps[c->map].name;
+             *s && w < line + (int)sizeof line - 1; s++) *w++ = *s;
+        *w = 0;
+        mote->log(line);
+    }
+    return 1;
 }
 
 /* Warp arrival: the destination event's own cell, one cell out of the doorway
@@ -563,6 +602,8 @@ static void g_update(float dt) {
         const PcMapDef *d = &pc_maps[map_index];
         ow_warp_poll(&warp, d->warps, d->warp_count, player.px >> 4, player.py >> 4,
                      player.dir, player.just_arrived, player.bumping);
+        /* The edge, unless a door won the frame. A warp fades; a connection cuts. */
+        if (!ow_warp_busy(&warp)) take_connection(dir_held);
     }
 
     /* Actors animate per frame, not per pixel walked: a spinner keeps turning

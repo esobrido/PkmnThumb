@@ -540,7 +540,7 @@ reutilizarlo: hay que re-expresarlo como notas/stream para Mote (`audio_note`,
 
 ## Lo que emite el extractor
 
-Un solo header, `game/src/gen/world.h`, con cinco grupos de tablas:
+Un solo header, `game/src/gen/world.h`, con seis grupos de tablas:
 
 ```c
 bg_pal[8][4]                // paletas BG del grupo `day` (exterior)
@@ -548,9 +548,19 @@ bg_pal_indoor[8][4]         // paletas BG del grupo `indoor` (interiores)
 pc_tilesets[PC_TS_COUNT]    // por tileset: tiles 2bpp, mt_tiles, mt_pal, mt_coll
 pc_sprites[PC_SPRITE_COUNT] // hojas 16x96 (6 frames de 16x16), compartidas por mapas
 pc_maps[PC_MAP_COUNT]       // { nombre, ancho, alto, bloques, tileset, objetos, n,
-                            //   warps, n_warps, pal, spawn_x, spawn_y }
+                            //   warps, n_warps, pal, spawn_x, spawn_y, conns, n_conns }
 PcWarp warp_<mapa>[N]       // { x, y, mapa destino, nº de warp, kind, dir }
+PcConnection conn_<mapa>[N] // { dirección, mapa destino, offset en bloques }
 ```
+
+Las **conexiones** (`connection <dir>, <Mapa>, <MAP_ID>, <offset>` en
+`data/maps/attributes.asm`, justo detrás del `map_attributes`) son el otro modo de
+cambiar de mapa: un borde compartido, sin puerta ni fundido. El extractor no se fía de
+los datos — calcula la colisión de las dos orillas, aplica el desplazamiento y **falla el
+build** si no queda ni una celda andable en común. Con los mapas que hay en el build, New
+Bark Town y la Ruta 29 comparten las celdas 8-9 y la Ruta 29 y Ciudad Cerezo las 6-7 (los
+dos con `offset 0`); los otros bordes (`-> Route27`, `-> Route30`, `-> CherrygroveBay`,
+`-> Route46`) apuntan a mapas que no están en este build y quedan sólidos.
 
 Los tilesets se deduplican: New Bark Town, Ruta 29 y Ciudad Cerezo usan
 `johto_traditional` y las cuatro casas `johto_house`, así que el arte de cada uno

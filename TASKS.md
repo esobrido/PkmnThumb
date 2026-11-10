@@ -172,7 +172,7 @@ Objetivo: un overworld que se pueda ver y tocar, y un pipeline fiable.
 **Puerta F0**: andar por New Bark Town con NPCs animados y ≥55 fps en device, con el
 raster medido.
 
-Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (76 036 B,
+Estado: todo cerrado menos el número de fps en hardware — el `.mote` compila (76 700 B,
 `.bss` 3 384 B) y el raster se mide en host (20 µs), pero no hay handheld en este entorno.
 Falta un test en el dispositivo antes de dar la puerta por pasada.
 
@@ -220,7 +220,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 508 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
 | SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales), `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
 | SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y que 13 de los 32 NPCs caigan al texto plano (límite de la VM: `special`, movimientos) |
-| SCR-04 | Warps, conexiones entre mapas, carga en caliente | L |
+| SCR-04 | Warps, conexiones entre mapas, carga en caliente | ✅ puertas y warp carpets en los 8 mapas, y **conexiones**: `ow/connect` cruza el borde en las 4 direcciones aplicando el `offset` del original; el extractor valida que las dos orillas compartan celda andable y deja sólidos los bordes que llevan a mapas fuera del build (`-> Route27`, `-> Route30`, `-> CherrygroveBay`, `-> Route46`). Verificado andando New Bark Town → Ruta 29 → Ciudad Cerezo (dos `connect:` en el log, capturas en `artifacts/`) |
 | SCR-04a | Puertas de New Bark Town: disparo, fade y vuelta afuera (0.8.0) | ✅ |
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
 | SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.12.0) y VM que lo ejecuta (0.10.0) | 🟡 |
@@ -231,6 +231,13 @@ Objetivo: el mundo deja de ser un decorado.
 
 **Puerta F2**: recorrer New Bark Town → Ruta 29 → Cherrygrove con warps reales, hablar
 con Elm y que su script se ejecute del bytecode original.
+
+✅ El recorrido se hace **andando**: puertas y alfombras con fundido dentro de cada mapa,
+y las dos conexiones al oeste (New Bark Town ↔ Ruta 29, Ruta 29 ↔ Ciudad Cerezo) con el
+cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log deja
+`connect: Route29` y `connect: CherrygroveCity` por el camino. Hablar con Elm ya salía de
+su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta:
+`coord_event`, movimiento de NPCs y cutscenes son SCR-05/06/07.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 

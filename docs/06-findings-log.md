@@ -417,6 +417,38 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   desde `g_update` (los de `g_init` también), así que el oráculo barato es un contador
   temporal en `try_talk` sobre la salida del host.
 
+## Trampas nuevas (fase 2: conexiones entre mapas)
+
+- **El `offset` de `connection` se resta, y no es obvio.** El macro deja
+  `_x = offset * -2` (norte/sur) y `_y = offset * -2` (este/oeste) en celdas, y
+  `EnterNorthConnection` y compañía lo **suman** a la coordenada del jugador; o sea que la
+  celda de destino es `coordenada - 2*offset`. Se comprobó pasando las 210 conexiones de
+  `attributes.asm` por la colisión real de las dos orillas: 58 sólo encajan con el signo
+  negativo y **ninguna** con el positivo.
+- **Una pared del borde no es una salida.** La primera versión del chequeo cruzaba en
+  cuanto el paso fallaba, así que empujar contra una valla del borde disparaba la
+  conexión y el jugador aparecía en el mapa vecino atravesando la casa. La condición es
+  estar *en la celda del borde* (`x == 0`, `x == ancho-1`, `y == 0`, `y == alto-1`), no
+  sólo que el paso esté bloqueado.
+- **`connection` puede apuntar a un mapa que no está en el build** (`NewBarkTown east ->
+  Route27`, `CherrygroveCity north -> Route30`, `west -> CherrygroveBay`, `Route29 north
+  -> Route46`). Se emite con `map = -1` y el borde queda sólido, igual que una puerta
+  cerrada.
+- **Cada orilla andable tiene que existir en los dos lados.** El extractor calcula las
+  celdas andables de los dos bordes y falla si el corrimiento no deja ninguna en común:
+  una conexión mal alineada entra en el juego como una pared invisible, que es el peor
+  tipo de bug (no hay crash, sólo un borde que "no funciona").
+- **Cortar en vez de arrastrar cambia dónde se puede escribir una receta.** El original
+  rellena una franja y la entra con el scroll; aquí el mapa cambia en la celda del borde
+  y el jugador aparece en el borde opuesto. Para capturas hace falta que el último paso
+  llegue a la celda del borde y que el pad siga apretado, así que la receta se calcula
+  con una simulación del propio `ow_player` (0,96 px/frame con `MOTE_DT_MS=16`) en vez de
+  a ojo: las ventanas de `MOTE_KEYS` salen de ahí y se confirman con el log `connect: <mapa>`.
+- **Al soltar el pad no se cancela el paso comprometido.** Cerrar la ventana justo en el
+  frame en que se completa el paso deja el pad apretado y **arranca el siguiente** en el
+  mismo update (`ow_player_update` encadena), así que la receta se cierra 2-3 frames
+  antes y el paso termina solo, sin encadenar otro.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -432,12 +464,13 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 ## Estado al cerrar esta fase
 
 - `tools/extract.py` extrae mapa, metatiles, atributos, colisión, tiles, paletas BG
-  (incluida la `indoor`), sprites, objetos, textos y **warps**, y **falla con mensaje
-  claro** si los tamaños no cuadran.
+  (incluida la `indoor`), sprites, objetos, textos, **warps y conexiones**, y **falla con
+  mensaje claro** si los tamaños no cuadran o si una conexión no tiene orilla andable.
 - `game/src/game.c` renderiza 8 mapas con paleta por tile y por entorno, mueve al jugador
-  en pasos de 16 px con colisión real, panea la cámara, dibuja los NPCs y **cruza
-  puertas**: fundido de 10+10 frames, carga del destino y vuelta afuera por la estera.
-- Verificado: `scripts/test.sh` (15 programas unitarios y 7 escenarios, todos en verde,
+  en pasos de 16 px con colisión real, panea la cámara, dibuja los NPCs, **cruza
+  puertas** (fundido de 10+10 frames, carga del destino y vuelta afuera por la estera) y
+  **cruza bordes entre mapas** por las conexiones, sin fundido.
+- Verificado: `scripts/test.sh` (19 programas unitarios y 7 escenarios, todos en verde,
   `test_text_box` incluidos los 24 comandos),
   build host y de device, captura headless (`docs/img/door.png` es la secuencia
   exterior → blanco → interior), movimiento con `MOTE_KEYS` y compilación sin warnings

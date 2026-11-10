@@ -131,6 +131,86 @@ def map_warps(pc, map_name):
     return out
 
 
+# The `connection` macro's direction -> the ow/dir.h direction the player walks to
+# leave through that edge (ow/dir.h: 0 down, 1 up, 2 left, 3 right).
+CONNECTION_DIRS = {"north": 1, "south": 0, "west": 2, "east": 3}
+CONNECTION_OPPOSITE = {"north": "south", "south": "north", "west": "east",
+                       "east": "west"}
+
+
+def map_connections(pc, map_name, const_name):
+    """`connection <dir>, <Map>, <MAP_ID>, <offset>` rows of this map.
+
+    They sit right after the map's `map_attributes` line and run to the next one.
+    The offset shifts the destination along the shared edge, in blocks: the macro
+    turns it into the strip offsets with `_x = offset * -2` (north/south) and
+    `_y = offset * -2` (east/west), in 16 px cells, and the engine adds them to
+    the player's coordinate when the edge is crossed (home/map.asm, the
+    StripXOffset/StripYOffset of the connection struct).
+    """
+    txt = read(os.path.join(pc, "data/maps/attributes.asm"))
+    m = re.search(r"^\s*map_attributes\s+%s\s*,.*?$"
+                  r"(.*?)(?=^\s*map_attributes\s+\w+\s*,|\Z)" % map_name,
+                  txt, re.M | re.S)
+    if not m:
+        die("map_attributes block for %s not found" % map_name)
+    out = []
+    seen = set()
+    for c in re.finditer(r"^\s*connection\s+(\w+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,"
+                         r"\s*(-?\d+)", m.group(1), re.M):
+        cdir, cname, cconst, coff = c.group(1), c.group(2), c.group(3), int(c.group(4))
+        if cdir not in CONNECTION_DIRS:
+            die("%s: connection direction %r is not north/south/west/east"
+                % (map_name, cdir))
+        if cdir in seen:
+            die("%s: two %s connections" % (map_name, cdir))
+        seen.add(cdir)
+        if const_name.get(cconst) != cname:
+            die("%s: connection %s names %s, but that map const is %s"
+                % (map_name, cdir, cname, const_name.get(cconst)))
+        if not -127 <= coff <= 127:
+            die("%s: connection %s offset %d does not fit the emitted int8_t"
+                % (map_name, cdir, coff))
+        out.append({"dir": cdir, "name": cname, "offset": coff})
+    return out
+
+
+_edge_cells_cache = {}
+
+
+def map_edge_cells(pc, map_name, side):
+    """The walkable cells on one edge of a map, as the coordinate that varies.
+
+    West/east edges answer with the set of walkable y cells, north/south with the
+    set of walkable x cells (in 16 px cells, 2 per block). Two connected maps have
+    to agree on that set once the offset is applied, which is what
+    map_connections checks: a connection that leads into a wall is a data bug the
+    extractor should catch, not something the player discovers by walking into an
+    invisible edge.
+    """
+    key = (map_name, side)
+    if key in _edge_cells_cache:
+        return _edge_cells_cache[key]
+    w, h = map_dims(pc, map_name)
+    ts = map_tileset(pc, map_name)
+    blocks = map_blocks(pc, map_name, w, h)
+    colls = collisions(pc, ts)
+    cw, ch = w * 2, h * 2
+
+    def walkable(cx, cy):
+        quad = (cx & 1) + 2 * (cy & 1)
+        return not ((colls[blocks[(cy // 2) * w + cx // 2]] >> quad) & 1)
+
+    if side in ("west", "east"):
+        x = 0 if side == "west" else cw - 1
+        cells = {y for y in range(ch) if walkable(x, y)}
+    else:
+        y = 0 if side == "north" else ch - 1
+        cells = {x for x in range(cw) if walkable(x, y)}
+    _edge_cells_cache[key] = cells
+    return cells
+
+
 def map_const_to_name(pc):
     """PLAYERS_HOUSE_1F -> PlayersHouse1F, from data/maps/attributes.asm."""
     txt = read(os.path.join(pc, "data/maps/attributes.asm"))
@@ -2104,6 +2184,19 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t dir;               /* carpet direction that triggers it */\n"
                 "} PcWarp;\n\n")
 
+        f.write("/* ---- connections ----\n"
+                " * A shared edge, not a door: walking into the edge cell of this map\n"
+                " * puts the player on the opposite edge of `map`, shifted `offset`\n"
+                " * blocks along it (the original's strip offsets, -2 cells per block).\n"
+                " * `dir` is the ow/dir.h direction you walk to leave this map;\n"
+                " * map = -1 means the other side is not in this build, so the edge\n"
+                " * stays solid. */\n"
+                "typedef struct {\n"
+                "    uint8_t dir;\n"
+                "    int8_t map;\n"
+                "    int8_t offset;\n"
+                "} PcConnection;\n\n")
+
         f.write("/* ---- object events: pixel coords on the 16px grid ----\n"
                 " * dir: 0 down, 1 up, 2 left, 3 right; anim: 0 stand, 1 spin ccw,\n"
                 " * 2 spin cw, 3 spin randomly (in place). */\n")
@@ -2126,6 +2219,8 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t warp_count;\n"
                 "    uint8_t pal;                /* 0 = bg_pal (outdoor), 1 = bg_pal_indoor */\n"
                 "    uint8_t spawn_x, spawn_y;   /* the game's respawn point, 0 = none */\n"
+                "    const PcConnection *conns;\n"
+                "    uint8_t conn_count;\n"
                 "} PcMapDef;\n\n")
 
         for m in maps:
@@ -2155,6 +2250,14 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                             % (wp["x"], wp["y"], wp["map"], wp["warp"], wp["kind"],
                                wp["dir"], wp["dest"], wp["warp"]))
                 f.write("};\n")
+            if m["conns"]:
+                f.write("static const PcConnection conn_%s[%d] = {\n"
+                        % (ident, len(m["conns"])))
+                for cn in m["conns"]:
+                    f.write("\t{%d,%3d,%3d},  /* %s -> %s, offset %d */\n"
+                            % (cn["dir"], cn["map"], cn["offset"], cn["side"],
+                               cn["dest"], cn["offset"]))
+                f.write("};\n")
             f.write("\n")
 
         f.write("#define PC_MAP_COUNT %d\n" % len(maps))
@@ -2163,11 +2266,12 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
         f.write("static const PcMapDef pc_maps[PC_MAP_COUNT] = {\n")
         for mi, m in enumerate(maps):
             ident = ctok(m["name"])
-            f.write('\t{ "%s", %d, %d, blk_%s, %d, %s, %d, %s, %d, %d, %d, %d },\n'
+            f.write('\t{ "%s", %d, %d, blk_%s, %d, %s, %d, %s, %d, %d, %d, %d, %s, %d },\n'
                     % (m["name"], m["w"], m["h"], ident, m["ts"],
                        "obj_" + ident if m["objects"] else "0", len(m["objects"]),
                        "warp_" + ident if m["warps"] else "0", len(m["warps"]),
-                       m["pal"], m["spawn"][0], m["spawn"][1]))
+                       m["pal"], m["spawn"][0], m["spawn"][1],
+                       "conn_" + ident if m["conns"] else "0", len(m["conns"])))
         f.write("};\n\n#endif\n")
 
 
@@ -2297,6 +2401,32 @@ def main():
                 print("warp     %-18s %d,%d -> %s #%d NOT IN BUILD (shut)"
                       % (map_name, wx, wy, dest, dest_warp))
 
+        # Map connections: a shared edge with the map next door. The two edges have
+        # to line up once the offset is applied, or the player would walk into an
+        # invisible wall (or onto a wall) on the other side.
+        conns = []
+        for cn in map_connections(pc, map_name, const_name):
+            slot = map_slot.get(cn["name"], -1)
+            side = cn["dir"]
+            if slot >= 0:
+                src = map_edge_cells(pc, map_name, side)
+                dst = map_edge_cells(pc, cn["name"], CONNECTION_OPPOSITE[side])
+                shift = 2 * cn["offset"]
+                if side in ("west", "east"):
+                    shared = {y for y in src if (y - shift) in dst}
+                else:
+                    shared = {x for x in src if (x - shift) in dst}
+                if not shared:
+                    die("%s: %s connection to %s (offset %d) shares no walkable "
+                        "edge cell (source %s, destination %s)"
+                        % (map_name, side, cn["name"], cn["offset"],
+                           sorted(src), sorted(dst)))
+            else:
+                print("connect  %-18s %-5s -> %-18s NOT IN BUILD (solid edge)"
+                      % (map_name, side, cn["name"]))
+            conns.append({"dir": CONNECTION_DIRS[side], "map": slot,
+                          "offset": cn["offset"], "side": side, "dest": cn["name"]})
+
         # The objects' scripts: an OBJECTTYPE_SCRIPT points at a label already in
         # the blob, an OBJECTTYPE_COMMAND becomes a one-command region at the end.
         # The bg_event cells go in the same blob for the same reason: a sign's
@@ -2338,10 +2468,12 @@ def main():
 
         maps.append({"name": map_name, "w": w, "h": h, "blocks": blocks, "ts": ti,
                      "objects": objects, "obj_text": obj_text, "warps": warps,
+                     "conns": conns,
                      "pal": 1 if env in ("INDOOR", "GATE") else 0,
                      "spawn": map_spawn.get(map_name, (0, 0))})
-        print("map      %-20s %2dx%-2d blocks (%3dx%-3d px)  tileset %-20s obj %d warp %d"
-              % (map_name, w, h, w * 32, h * 32, ts, len(objects), len(warps)))
+        print("map      %-20s %2dx%-2d blocks (%3dx%-3d px)  tileset %-20s obj %d warp %d conn %d"
+              % (map_name, w, h, w * 32, h * 32, ts, len(objects), len(warps),
+                 len(conns)))
 
     pals = bg_palettes(pc)
     pals_indoor = bg_palettes(pc, "indoor")
@@ -2349,6 +2481,8 @@ def main():
     if not player:
         die("player sprite gfx/sprites/%s.png not found" % args.player)
 
+    if len(maps) > 127:
+        die("PcConnection.map is an int8_t: at most 127 maps fit in one build")
     path = os.path.join(out, "world.h")
     emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor)
     print("tilesets  %d: %s" % (len(tilesets), ", ".join(t["name"] for t in tilesets)))

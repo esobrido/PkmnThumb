@@ -2179,6 +2179,19 @@ typedef struct {
     uint8_t dir;               /* carpet direction that triggers it */
 } PcWarp;
 
+/* ---- connections ----
+ * A shared edge, not a door: walking into the edge cell of this map
+ * puts the player on the opposite edge of `map`, shifted `offset`
+ * blocks along it (the original's strip offsets, -2 cells per block).
+ * `dir` is the ow/dir.h direction you walk to leave this map;
+ * map = -1 means the other side is not in this build, so the edge
+ * stays solid. */
+typedef struct {
+    uint8_t dir;
+    int8_t map;
+    int8_t offset;
+} PcConnection;
+
 /* ---- object events: pixel coords on the 16px grid ----
  * dir: 0 down, 1 up, 2 left, 3 right; anim: 0 stand, 1 spin ccw,
  * 2 spin cw, 3 spin randomly (in place). */
@@ -2202,6 +2215,8 @@ typedef struct {
     uint8_t warp_count;
     uint8_t pal;                /* 0 = bg_pal (outdoor), 1 = bg_pal_indoor */
     uint8_t spawn_x, spawn_y;   /* the game's respawn point, 0 = none */
+    const PcConnection *conns;
+    uint8_t conn_count;
 } PcMapDef;
 
 /* ---- NewBarkTown: 12 x 9 blocks (384 x 288 px) ---- */
@@ -2227,6 +2242,10 @@ static const PcWarp warp_new_bark_town[5] = {
 	{  3, 11,  5,1,0,0},  /* -> PlayersNeighborsHouse #1 */
 	{ 11, 13,  6,1,0,0},  /* -> LyrasHouse1F #1 */
 	{ 10,  2,  7,2,1,2},  /* -> ElmsHouse #2 */
+};
+static const PcConnection conn_new_bark_town[2] = {
+	{2,  1,  0},  /* west -> Route29, offset 0 */
+	{3, -1,  0},  /* east -> Route27, offset 0 */
 };
 
 /* ---- Route29: 30 x 9 blocks (960 x 288 px) ---- */
@@ -2260,6 +2279,11 @@ static const PcObject obj_route29[6] = {
 static const PcWarp warp_route29[1] = {
 	{ 27,  1, -1,3,0,0},  /* -> Route2946Gate #3 */
 };
+static const PcConnection conn_route29[3] = {
+	{1, -1, 10},  /* north -> Route46, offset 10 */
+	{2,  2,  0},  /* west -> CherrygroveCity, offset 0 */
+	{3,  0,  0},  /* east -> NewBarkTown, offset 0 */
+};
 
 /* ---- CherrygroveCity: 20 x 11 blocks (640 x 352 px) ---- */
 static const uint8_t blk_cherrygrove_city[220] = {
@@ -2291,6 +2315,11 @@ static const PcWarp warp_cherrygrove_city[5] = {
 	{ 17,  7, -1,1,0,0},  /* -> CherrygroveGymSpeechHouse #1 */
 	{ 25,  9, -1,1,0,0},  /* -> GuideGentsHouse #1 */
 	{ 31, 11, -1,1,0,0},  /* -> CherrygroveEvolutionSpeechHouse #1 */
+};
+static const PcConnection conn_cherrygrove_city[3] = {
+	{1, -1,  4},  /* north -> Route30, offset 4 */
+	{2, -1,-15},  /* west -> CherrygroveBay, offset -15 */
+	{3,  1,  0},  /* east -> Route29, offset 0 */
 };
 
 /* ---- ElmsLab: 5 x 6 blocks (160 x 192 px) ---- */
@@ -2382,14 +2411,14 @@ static const PcWarp warp_elms_house[2] = {
 #define PC_MAP_LYRASHOUSE1F 6
 #define PC_MAP_ELMSHOUSE 7
 static const PcMapDef pc_maps[PC_MAP_COUNT] = {
-	{ "NewBarkTown", 12, 9, blk_new_bark_town, 0, obj_new_bark_town, 5, warp_new_bark_town, 5, 0, 15, 6 },
-	{ "Route29", 30, 9, blk_route29, 0, obj_route29, 6, warp_route29, 1, 0, 0, 0 },
-	{ "CherrygroveCity", 20, 11, blk_cherrygrove_city, 0, obj_cherrygrove_city, 5, warp_cherrygrove_city, 5, 0, 29, 4 },
-	{ "ElmsLab", 5, 6, blk_elms_lab, 1, obj_elms_lab, 7, warp_elms_lab, 2, 1, 0, 0 },
-	{ "PlayersHouse1F", 6, 4, blk_players_house1_f, 2, obj_players_house1_f, 6, warp_players_house1_f, 3, 1, 0, 0 },
-	{ "PlayersNeighborsHouse", 4, 4, blk_players_neighbors_house, 2, obj_players_neighbors_house, 3, warp_players_neighbors_house, 2, 1, 0, 0 },
-	{ "LyrasHouse1F", 6, 4, blk_lyras_house1_f, 2, obj_lyras_house1_f, 1, warp_lyras_house1_f, 3, 1, 0, 0 },
-	{ "ElmsHouse", 4, 4, blk_elms_house, 2, obj_elms_house, 2, warp_elms_house, 2, 1, 0, 0 },
+	{ "NewBarkTown", 12, 9, blk_new_bark_town, 0, obj_new_bark_town, 5, warp_new_bark_town, 5, 0, 15, 6, conn_new_bark_town, 2 },
+	{ "Route29", 30, 9, blk_route29, 0, obj_route29, 6, warp_route29, 1, 0, 0, 0, conn_route29, 3 },
+	{ "CherrygroveCity", 20, 11, blk_cherrygrove_city, 0, obj_cherrygrove_city, 5, warp_cherrygrove_city, 5, 0, 29, 4, conn_cherrygrove_city, 3 },
+	{ "ElmsLab", 5, 6, blk_elms_lab, 1, obj_elms_lab, 7, warp_elms_lab, 2, 1, 0, 0, 0, 0 },
+	{ "PlayersHouse1F", 6, 4, blk_players_house1_f, 2, obj_players_house1_f, 6, warp_players_house1_f, 3, 1, 0, 0, 0, 0 },
+	{ "PlayersNeighborsHouse", 4, 4, blk_players_neighbors_house, 2, obj_players_neighbors_house, 3, warp_players_neighbors_house, 2, 1, 0, 0, 0, 0 },
+	{ "LyrasHouse1F", 6, 4, blk_lyras_house1_f, 2, obj_lyras_house1_f, 1, warp_lyras_house1_f, 3, 1, 0, 0, 0, 0 },
+	{ "ElmsHouse", 4, 4, blk_elms_house, 2, obj_elms_house, 2, warp_elms_house, 2, 1, 0, 0, 0, 0 },
 };
 
 #endif

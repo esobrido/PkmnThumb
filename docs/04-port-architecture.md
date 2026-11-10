@@ -38,7 +38,7 @@ objetos**, todo en tablas con índice.
 ```c
 pc_tilesets[PC_TS_COUNT]   // arte + metatiles + paletas + colisión, por tileset
 pc_sprites[PC_SPRITE_COUNT] // hojas de 6 frames, compartidas por todos los mapas
-pc_maps[PC_MAP_COUNT]       // { ancho, alto, bloques, tileset, objetos, n objetos }
+pc_maps[PC_MAP_COUNT]       // { ancho, alto, bloques, tileset, objetos, n objetos, conexiones }
 ```
 
 Los mapas comparten tileset (New Bark Town, Ruta 29 y Ciudad Cerezo usan todos
@@ -59,6 +59,47 @@ vez de dejar al jugador dentro de un árbol.
 
 El cambio de mapa también se puede forzar con **RB (siguiente) / LB (anterior)**, un
 atajo de depuración, no la forma de viajar del juego.
+
+## Conexiones: caminar de un mapa al de al lado
+
+`ow/connect.c` es lógica pura sobre la tabla `PcConnection` del mapa; no conoce ni el
+tileset ni Mote.
+
+```c
+const PcConnection *ow_connect_at(conns, n, dir)
+int ow_connect_on_edge(cx, cy, w, h, dir)
+int ow_connect_land(c, dest_w, dest_h, cx, cy, &px, &py)
+```
+
+El original **no funde** al cruzar una conexión: `EnterMapConnection`
+(`engine/overworld/warp_connection.asm`) cambia de mapa y rellena una franja del borde con
+el vecino, que luego entra arrastrada por el scroll. Aquí no hay búfer de borde
+compartido (cada mapa se dibuja de su tamaño), así que el cruce es un **corte**: al
+apretar contra la celda del borde, el jugador reaparece en la celda del borde opuesto del
+mapa vecino, mirando hacia donde iba, y la dirección mantenida lo hace seguir andando.
+Nada de fundido: el GB tampoco lo usa ahí.
+
+Aterrizaje, con `offset` en bloques (el original lo convierte en celdas con
+`offset * -2`):
+
+| dirección | celda de destino |
+|---|---|
+| oeste | `x = ancho_destino*2 - 1`, `y = y - 2*offset` |
+| este | `x = 0`, `y = y - 2*offset` |
+| norte | `y = alto_destino*2 - 1`, `x = x - 2*offset` |
+| sur | `y = 0`, `x = x - 2*offset` |
+
+`ow_connect_on_edge` es lo que impide que una pared del borde se tome por una salida: la
+conexión sólo existe en la celda del borde (`x == 0`, `x == ancho-1`, `y == 0`,
+`y == alto-1`), y `ow_connect_land` devuelve 0 si la celda calculada se sale del mapa
+destino. En `game.c` el disparo va después de las puertas y sólo si el jugador está
+quieto (`step_left == 0`), de modo que un paso a medias nunca cruza.
+
+El desplazamiento se comprobó contra los datos: de las 210 conexiones de
+`attributes.asm`, **58 sólo encajan con `-2*offset` y ninguna con `+2*offset`**; otras
+124 encajan con los dos signos (su offset es 0, o las dos orillas son andables de punta a
+punta) y 28 no tienen ninguna celda andable en común con ninguno de los dos. No es una
+convención deducida a ojo del macro.
 
 ## Puertas: disparo, fundido y vuelta afuera
 
@@ -366,13 +407,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **76 036 B** de código+datos |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **76 700 B** de código+datos |
 | RAM de módulo (`.bss`) | **3 384 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 76 036 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 76 700 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y

@@ -70,6 +70,8 @@ frame. Ejemplos:
 | **Entrar por la puerta** de casa de Lyra | `a:2-5,left:10-20,up:40-260` (una celda al oeste y arriba: la puerta está en (11,13)) |
 | Volver a salir | añadir `down:280-700`: pisa la estera hacia abajo y el warp de salida te deja en (11,14) |
 | Ver el interior de un mapa sin andar | `a:2-5,rb:10-13,rb:20-23,rb:30-33` (RB cicla: 3 = laboratorio de Elm, 4 = casa del jugador…) |
+| **Cruzar andando a la Ruta 29** (salir del pueblo por el oeste) | `a:60-64,left:75-400,up:410-520,right:530-634,up:640-900,left:910-1400` con `MOTE_DT_MS=16`; el log dice `connect: Route29` |
+| **New Bark Town → Ruta 29 → Ciudad Cerezo** andando | la anterior más `down:1405-1510,left:1530-1552,down:1572-1594,left:1614-1786,up:1806-1844,left:1864-1969,up:1989-2044,left:2064-2186,up:2206-2228,left:2248-2470,up:2490-2562,left:2582-2704,left:2724-2784`; dos `connect:` (Ruta 29 y Ciudad Cerezo) |
 
 Como el emulador corre sin límite de fps, los frames no equivalen a tiempo real; para
 eso está `MOTE_DT_MS`. **Importante para capturas con posición exacta**: sin
@@ -171,7 +173,7 @@ perf fps=60 update_us=120 raster_us=830 flush_us=210 core0%=42 core1%=38
 | `fps` | ~487 (sin límite de vsync) | **sin medir** |
 | `raster_us` | 20 | **sin medir** |
 | `update_us` | 0 (por debajo de la resolución del temporizador) | **sin medir** |
-| `.mote` | — | 76 036 B, `.bss` 3 384 B |
+| `.mote` | — | 76 700 B, `.bss` 3 384 B |
 | Fundido de puerta (16 384 px, nivel 1-9) | 61 µs | **sin medir** (~0,7 ms estimados por reloj) |
 
 El fundido se mide aparte porque sólo ocurre dentro de una puerta: un banco de 300
@@ -194,18 +196,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.13.0.mote` | el módulo que se copia al dispositivo (76 036 B) |
+| `PolishedCrystal-0.14.0.mote` | el módulo que se copia al dispositivo (76 700 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.13.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.14.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.13.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.14.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.13.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.14.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

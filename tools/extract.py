@@ -2888,7 +2888,95 @@ def growth_table(pc, growths):
     return rows
 
 
-def emit_pokemon(path, species, types, growths, growth_rows):
+def type_matchups(pc, type_id):
+    """data/types/type_matchups.asm -> (rows, identified_rows), in Q4.
+
+    Each `db ATTACKER, DEFENDER, FACTOR` is one pair; a missing pair is neutral.
+    A `$fe` marker part-way through does not split the table: the rows after it
+    are the ones `_CheckTypeMatchup` skips when the defender is identified
+    (Foresight), which is why Normal vs Ghost is an immunity but stops being one
+    under Foresight. The extractor keeps them in order and counts them, so a
+    scan that learns identification knows where to stop.
+
+    The factors are read from constants/battle_constants.asm, which annotates
+    each one with its own encoding (`$20`/`$08`/`$00`); a Q4 multiplier is not
+    retyped here.
+    """
+    where = "data/types/type_matchups.asm"
+    q4 = {}
+    for line in asm_source(pc, "constants/battle_constants.asm").splitlines():
+        m = re.match(r"\s*DEF (SUPER_EFFECTIVE|NOT_VERY_EFFECTIVE|NO_EFFECT)"
+                     r"\s+EQU\s+\S+\s*;\s*\$([0-9a-fA-F]{2})", line)
+        if m:
+            q4[m.group(1)] = int(m.group(2), 16)
+    if len(q4) != 3:
+        die("constants/battle_constants.asm: found %d of the three type "
+            "multipliers (%s)" % (len(q4), ", ".join(sorted(q4))))
+    effective = q4["SUPER_EFFECTIVE"] // 2
+    if not (q4["NOT_VERY_EFFECTIVE"] == effective // 2
+            and q4["NO_EFFECT"] == 0):
+        die("type multipliers are not the Q4 doubling/halving pair: %r" % (q4,))
+    rows, identified, seen = [], [], set()
+    tail = False
+    for line in asm_source(pc, where).splitlines():
+        code = line.split(";")[0].strip()
+        m = re.match(r"db\s+(.+)$", code)
+        if not m:
+            continue
+        args = [x.strip() for x in split_args(m.group(1))]
+        if args == ["$fe"]:
+            tail = True
+            continue
+        if args == ["$ff"]:
+            break
+        if len(args) != 3:
+            die("%s: a row with %d fields: %r" % (where, len(args), code))
+        atk, dfn, fac = args
+        for t in (atk, dfn):
+            if t not in type_id:
+                die("%s: unknown type %r" % (where, t))
+        if fac not in q4:
+            die("%s: unknown factor %r" % (where, fac))
+        pair = (type_id[atk], type_id[dfn], q4[fac])
+        if (pair[0], pair[1]) in seen:
+            die("%s: %s vs %s appears twice" % (where, atk, dfn))
+        seen.add((pair[0], pair[1]))
+        (identified if tail else rows).append(pair)
+    if not rows:
+        die("%s: no matchups" % where)
+    if len(rows) == len(seen):
+        die("%s: no $fe marker" % where)
+    # Order matters: the marked rows are the trailing ones.
+    return rows + identified, len(identified)
+
+
+def move_priorities(pc, move_id):
+    """data/moves/priorities.asm -> [(move, priority)]; unlisted moves are 0."""
+    where = "data/moves/priorities.asm"
+    rows = []
+    for line in asm_source(pc, where).splitlines():
+        code = line.split(";")[0].strip()
+        m = re.match(r"db\s+(.+)$", code)
+        if not m:
+            continue
+        args = [x.strip() for x in split_args(m.group(1))]
+        if args == ["-1"]:
+            break
+        if len(args) != 2:
+            die("%s: a row with %d fields: %r" % (where, len(args), code))
+        if args[0] not in move_id:
+            die("%s: unknown move %r" % (where, args[0]))
+        pri = int(args[1])
+        if not -128 <= pri <= 127:
+            die("%s: priority %d does not fit a signed byte" % (where, pri))
+        rows.append((move_id[args[0]], pri))
+    if not rows:
+        die("%s: no priorities" % where)
+    return rows
+
+
+def emit_pokemon(path, species, types, growths, growth_rows, matchups):
+
     """gen/pokemon.h: every species with its types, base stats and growth data.
 
     Names share one blob with an (offset, length) pair per species: 291 separate
@@ -2933,6 +3021,22 @@ def emit_pokemon(path, species, types, growths, growth_rows):
             f.write("\t{%2d,%2d,%4d,%4d,%4d},  /* %s */\n"
                     % (a, b, c, d, e, growths[i]))
         f.write("};\n\n")
+        rows, foresight = matchups
+        f.write("/* Type effectiveness in Q4, straight from data/types/type_matchups.asm:\n"
+                " * 32 = x2, 8 = x0.5, 0 = immune. A pair that is not here is neutral\n"
+                " * (16). Immunities come last, so a scan can stop at the first 0. */\n"
+                "typedef struct { uint8_t attack, defend, mod; } PcTypeMatchup;\n\n")
+        f.write("#define PC_TYPE_MATCHUP_COUNT %d\n\n" % len(rows))
+        f.write("static const PcTypeMatchup pc_type_matchups[PC_TYPE_MATCHUP_COUNT] = {\n")
+        for atk, dfn, mod in rows:
+            f.write("\t{%2d,%2d,%2d},  /* %s -> %s */\n"
+                    % (atk, dfn, mod, types[atk], types[dfn]))
+        f.write("};\n\n")
+        f.write("/* The last PC_TYPE_MATCHUP_FORESIGHT_COUNT rows come after the\n"
+                " * original's `$fe` marker: _CheckTypeMatchup skips them once the\n"
+                " * defender is identified (Foresight). Nothing identifies anybody\n"
+                " * yet, so the port scans all of them. */\n")
+        f.write("#define PC_TYPE_MATCHUP_FORESIGHT_COUNT %d\n\n" % foresight)
         f.write("/* name bytes, in the game's charmap (see PcSpecies.name) */\n")
         f.write("static const uint8_t pc_species_names[%d] = {\n" % max(1, len(blob)))
         for i in range(0, len(blob), 16):
@@ -2964,7 +3068,7 @@ def emit_pokemon(path, species, types, growths, growth_rows):
         f.write("};\n\n#endif\n")
 
 
-def emit_moves(path, moves, types, categories):
+def emit_moves(path, moves, types, categories, priorities):
     """gen/moves.h: the moves table, ids as the original numbers them (1..).
 
     `moves` is in id order starting at 1 and carries its own name bytes. Effect
@@ -3014,6 +3118,15 @@ def emit_moves(path, moves, types, categories):
             f.write("\t{%4d,%2d,%2d,%d,%3d,%4d,%3d,%3d,%3d},  /* %s */\n"
                     % (noff, nlen, mv["type"], mv["category"], mv["power"], mv["acc"],
                        mv["pp"], mv["effect"], mv["chance"], mv["const"]))
+        f.write("};\n\n")
+        f.write("/* Move priority (data/moves/priorities.asm); a move that is not\n"
+                " * listed has 0. Higher goes first, whatever the speed says. */\n"
+                "typedef struct { uint8_t move; int8_t priority; } PcMovePriority;\n\n")
+        f.write("#define PC_MOVE_PRIORITY_COUNT %d\n\n" % len(priorities))
+        f.write("static const PcMovePriority pc_move_priorities"
+                "[PC_MOVE_PRIORITY_COUNT] = {\n")
+        for move, pri in priorities:
+            f.write("\t{%3d,%3d},\n" % (move, pri))
         f.write("};\n\n#endif\n")
 
 
@@ -3357,8 +3470,9 @@ def main():
                         "base": st["bst"], "catch": st["catch"],
                         "exp": st["exp"], "growth": growth_id[st["growth"]]}
     growth_rows = growth_table(pc, growths)
+    matchups = type_matchups(pc, type_id)
     ppath = os.path.join(out, "pokemon.h")
-    emit_pokemon(ppath, species, type_names, growths, growth_rows)
+    emit_pokemon(ppath, species, type_names, growths, growth_rows, matchups)
     print("species   %d in %s (%d KB, %d forms skipped)"
           % (len(species), ppath, os.path.getsize(ppath) // 1024, forms_skipped))
 
@@ -3381,7 +3495,8 @@ def main():
                       "power": mv["power"], "acc": mv["acc"], "pp": mv["pp"],
                       "effect": mv["effect"], "chance": mv["chance"]})
     mvh = os.path.join(out, "moves.h")
-    emit_moves(mvh, moves, type_names, cats)
+    emit_moves(mvh, moves, type_names, cats,
+               move_priorities(pc, {n: i for i, n in enumerate(mv_consts)}))
     print("moves     %d in %s (%d KB)" % (len(moves), mvh,
                                           os.path.getsize(mvh) // 1024))
 

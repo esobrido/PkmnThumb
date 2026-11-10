@@ -650,6 +650,42 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   nivel en su curva; si no, el primer KO de un mon salvaje de nivel 20 lo haría subir dos
   o tres niveles de golpe.
 
+## Trampas nuevas (fase 4: batalla)
+
+- **La tabla de tipos no es una matriz, es una lista de excepciones.** `TypeMatchups`
+  enumera sólo los pares que no son neutros, y `_CheckTypeMatchup` los recorre sumando
+  dobles y mitades a un `$10`: un defensor de dos tipos se lleva las dos filas, así que
+  x4 y x0.25 salen de multiplicar enteros, no de un producto en coma flotante. El orden
+  importa: al primer 0 la búsqueda se para, y por eso una inmunidad gana al x2 del otro
+  tipo.
+- **El marcador `$fe` de `type_matchups.asm` significa lo contrario de lo que parece.**
+  Las filas que vienen **debajo** son las que se saltan cuando el defensor está
+  identificado (`Foresight`): la inmunidad Normal → Fantasma vive ahí. Sacarlas a una
+  tabla aparte "para cuando exista Foresight" deja a los normales pegando a los fantasmas.
+  El port las guarda en su sitio y cuenta las últimas (`PC_TYPE_MATCHUP_FORESIGHT_COUNT`).
+- **Tierra contra Volador no está en la tabla.** Está comentada en el `.asm` porque
+  `CheckAirborne` contesta por el tipo Volador, `Levitación` y `Magnet Rise`. Sin esa
+  comprobación, un Terremoto barre a un Pidgeot. El port la hace por el tipo y anota que
+  las habilidades son BAT-04.
+- **Charizard es Fuego/Dragón en este hack**, no Fuego/Volador: los tipos salen de
+  `base_stats/charizard.asm`, no del juego que uno recuerda. Elegir un Pokémon para un
+  test de memoria da un fallo de tipos que parece un bug del código.
+- **El daño se hace en cuatro pasadas, y cada división trunca donde ocurre.**
+  `((2·nivel/5 + 2) · potencia · ataque) / defensa / 50 + 2` vale 37 para nivel 50,
+  potencia 80 y 100/100; con flotantes, los golpes de nivel 5 salen distintos. La
+  defensa se recorta a 1 antes de dividir.
+- **El modificador de tipo y el STAB son el mismo número Q4.** `BattleCommand_stab`
+  convierte `wTypeMatchup` en `mod + mod/2` para el STAB y luego multiplica el daño por
+  él y divide entre 16; no hay dos factores. La variación de 85-100 % **no se aplica** a
+  0 ni a 1 de daño (reducir 1 daría 0), y un golpe no inmune nunca baja de 1.
+- **La tabla de prioridades incluye `NO_MOVE` con 10.** Es el pseudo-movimiento del
+  cambio forzado (`Pursuit`), no un error: `battle_priority(0)` devuelve 10. Los empates
+  de velocidad los decide el RNG (`CheckSpeed`), no el turno anterior.
+- **La experiencia de un KO es `exp_base · nivel / 7`, mínimo 1.** La opción
+  `SCALED_EXP` (apagada por defecto) cambia el divisor a 5, y la batalla de entrenador
+  multiplica por 1,5 **después** de dividir. A nivel 100 no se da nada, aunque el mon
+  salvaje hubiera pagado: `GiveExperiencePoints` sale antes de multiplicar.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -681,9 +717,10 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **El reloj** (`ow/clock`) acumula tiempo jugado (sin RTC, 6×: un día cada cuatro horas
   de partida), decide la fase con las horas del original y el grupo de paleta con la
   fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
-- Verificado: `scripts/test.sh` (25 programas unitarios y 7 escenarios, todos en verde,
-  `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_level`, `test_mon_mon` y
-  `test_mon_party` incluidos),
+- Verificado: `scripts/test.sh` (28 programas unitarios y 7 escenarios, todos en verde,
+  `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_level`, `test_mon_mon`,
+  `test_mon_party`, `test_battle_type`, `test_battle_damage` y `test_battle_turn`
+  incluidos),
   build host y de device (83 776 B, `.bss` 3 812 B), las tres franjas del día en el
   emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
   captura headless

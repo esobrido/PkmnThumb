@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **32 hechos · 8 parciales · 54 pendientes** (el conteo incluye las tablas
+Progreso: **32 hechos · 10 parciales · 52 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -270,6 +270,15 @@ paletas OBJ/hora real (SYS-02/SYS-05) que no bloquean ninguna puerta.
 | BAT-07 | UI de batalla adaptada a 128×128 | L |
 | BAT-08 | Animaciones de movimientos | L (opcional) |
 | BAT-09 | Batallas dobles | L (opcional) |
+
+**Estado de la fase 4: el motor ya pelea, la pantalla no existe.** `battle/type` (tabla de
+`type_matchups.asm` con el `$fe` de Foresight en su sitio y la inmunidad Tierra/Volador de
+`CheckAirborne`), `battle/damage` (las cuatro pasadas de `damagecalc`, el Q4 de tipo y STAB
+y la variación 85-100 %) y `battle/turn` (prioridad, velocidad, empate por RNG, PP, el que
+cae no responde, y la experiencia del KO por `mon_add_exp`) están hechos y probados
+(`test_battle_type`, `test_battle_damage`, `test_battle_turn`). Queda fuera de BAT-01 la
+pantalla (BAT-07) y el enganche a `game.c`, y de BAT-02 la precisión y los críticos.
+BAT-01 está en 🟡 por eso: el bucle existe, todavía no se ve.
 
 **Puerta F4**: capturar un Pokémon salvaje en Ruta 29 con el motor nuevo, con la misma
 fórmula de daño que el original (verificable contra el asm).

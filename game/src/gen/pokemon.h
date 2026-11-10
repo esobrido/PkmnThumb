@@ -344,6 +344,141 @@ static const PcGrowth pc_growth_rates[PC_GROWTH_COUNT] = {
 	{ 5, 4,   0,   0,   0},  /* SLOW */
 };
 
+/* Type effectiveness in Q4, straight from data/types/type_matchups.asm:
+ * 32 = x2, 8 = x0.5, 0 = immune. A pair that is not here is neutral
+ * (16). Immunities come last, so a scan can stop at the first 0. */
+typedef struct { uint8_t attack, defend, mod; } PcTypeMatchup;
+
+#define PC_TYPE_MATCHUP_COUNT 119
+
+static const PcTypeMatchup pc_type_matchups[PC_TYPE_MATCHUP_COUNT] = {
+	{ 0, 5, 8},  /* NORMAL -> ROCK */
+	{ 0, 8, 8},  /* NORMAL -> STEEL */
+	{ 9, 9, 8},  /* FIRE -> FIRE */
+	{ 9,10, 8},  /* FIRE -> WATER */
+	{ 9,11,32},  /* FIRE -> GRASS */
+	{ 9,14,32},  /* FIRE -> ICE */
+	{ 9, 6,32},  /* FIRE -> BUG */
+	{ 9, 5, 8},  /* FIRE -> ROCK */
+	{ 9,15, 8},  /* FIRE -> DRAGON */
+	{ 9, 8,32},  /* FIRE -> STEEL */
+	{10, 9,32},  /* WATER -> FIRE */
+	{10,10, 8},  /* WATER -> WATER */
+	{10,11, 8},  /* WATER -> GRASS */
+	{10, 4,32},  /* WATER -> GROUND */
+	{10, 5,32},  /* WATER -> ROCK */
+	{10,15, 8},  /* WATER -> DRAGON */
+	{12,10,32},  /* ELECTRIC -> WATER */
+	{12,12, 8},  /* ELECTRIC -> ELECTRIC */
+	{12,11, 8},  /* ELECTRIC -> GRASS */
+	{12, 4, 0},  /* ELECTRIC -> GROUND */
+	{12, 2,32},  /* ELECTRIC -> FLYING */
+	{12,15, 8},  /* ELECTRIC -> DRAGON */
+	{11, 9, 8},  /* GRASS -> FIRE */
+	{11,10,32},  /* GRASS -> WATER */
+	{11,11, 8},  /* GRASS -> GRASS */
+	{11, 3, 8},  /* GRASS -> POISON */
+	{11, 4,32},  /* GRASS -> GROUND */
+	{11, 2, 8},  /* GRASS -> FLYING */
+	{11, 6, 8},  /* GRASS -> BUG */
+	{11, 5,32},  /* GRASS -> ROCK */
+	{11,15, 8},  /* GRASS -> DRAGON */
+	{11, 8, 8},  /* GRASS -> STEEL */
+	{14,10, 8},  /* ICE -> WATER */
+	{14,11,32},  /* ICE -> GRASS */
+	{14,14, 8},  /* ICE -> ICE */
+	{14, 4,32},  /* ICE -> GROUND */
+	{14, 2,32},  /* ICE -> FLYING */
+	{14,15,32},  /* ICE -> DRAGON */
+	{14, 8, 8},  /* ICE -> STEEL */
+	{14, 9, 8},  /* ICE -> FIRE */
+	{ 1, 0,32},  /* FIGHTING -> NORMAL */
+	{ 1,14,32},  /* FIGHTING -> ICE */
+	{ 1, 3, 8},  /* FIGHTING -> POISON */
+	{ 1, 2, 8},  /* FIGHTING -> FLYING */
+	{ 1,13, 8},  /* FIGHTING -> PSYCHIC */
+	{ 1, 6, 8},  /* FIGHTING -> BUG */
+	{ 1, 5,32},  /* FIGHTING -> ROCK */
+	{ 1,16,32},  /* FIGHTING -> DARK */
+	{ 1, 8,32},  /* FIGHTING -> STEEL */
+	{ 1,17, 8},  /* FIGHTING -> FAIRY */
+	{ 3,11,32},  /* POISON -> GRASS */
+	{ 3, 3, 8},  /* POISON -> POISON */
+	{ 3, 4, 8},  /* POISON -> GROUND */
+	{ 3, 5, 8},  /* POISON -> ROCK */
+	{ 3, 7, 8},  /* POISON -> GHOST */
+	{ 3, 8, 0},  /* POISON -> STEEL */
+	{ 3,17,32},  /* POISON -> FAIRY */
+	{ 4, 9,32},  /* GROUND -> FIRE */
+	{ 4,12,32},  /* GROUND -> ELECTRIC */
+	{ 4,11, 8},  /* GROUND -> GRASS */
+	{ 4, 3,32},  /* GROUND -> POISON */
+	{ 4, 6, 8},  /* GROUND -> BUG */
+	{ 4, 5,32},  /* GROUND -> ROCK */
+	{ 4, 8,32},  /* GROUND -> STEEL */
+	{ 2,12, 8},  /* FLYING -> ELECTRIC */
+	{ 2,11,32},  /* FLYING -> GRASS */
+	{ 2, 1,32},  /* FLYING -> FIGHTING */
+	{ 2, 6,32},  /* FLYING -> BUG */
+	{ 2, 5, 8},  /* FLYING -> ROCK */
+	{ 2, 8, 8},  /* FLYING -> STEEL */
+	{13, 1,32},  /* PSYCHIC -> FIGHTING */
+	{13, 3,32},  /* PSYCHIC -> POISON */
+	{13,13, 8},  /* PSYCHIC -> PSYCHIC */
+	{13,16, 0},  /* PSYCHIC -> DARK */
+	{13, 8, 8},  /* PSYCHIC -> STEEL */
+	{ 6, 9, 8},  /* BUG -> FIRE */
+	{ 6,11,32},  /* BUG -> GRASS */
+	{ 6, 1, 8},  /* BUG -> FIGHTING */
+	{ 6, 3, 8},  /* BUG -> POISON */
+	{ 6, 2, 8},  /* BUG -> FLYING */
+	{ 6,13,32},  /* BUG -> PSYCHIC */
+	{ 6, 7, 8},  /* BUG -> GHOST */
+	{ 6,16,32},  /* BUG -> DARK */
+	{ 6, 8, 8},  /* BUG -> STEEL */
+	{ 6,17, 8},  /* BUG -> FAIRY */
+	{ 5, 9,32},  /* ROCK -> FIRE */
+	{ 5,14,32},  /* ROCK -> ICE */
+	{ 5, 1, 8},  /* ROCK -> FIGHTING */
+	{ 5, 4, 8},  /* ROCK -> GROUND */
+	{ 5, 2,32},  /* ROCK -> FLYING */
+	{ 5, 6,32},  /* ROCK -> BUG */
+	{ 5, 8, 8},  /* ROCK -> STEEL */
+	{ 7, 0, 0},  /* GHOST -> NORMAL */
+	{ 7,13,32},  /* GHOST -> PSYCHIC */
+	{ 7,16, 8},  /* GHOST -> DARK */
+	{ 7, 7,32},  /* GHOST -> GHOST */
+	{15,15,32},  /* DRAGON -> DRAGON */
+	{15, 8, 8},  /* DRAGON -> STEEL */
+	{15,17, 0},  /* DRAGON -> FAIRY */
+	{16, 1, 8},  /* DARK -> FIGHTING */
+	{16,13,32},  /* DARK -> PSYCHIC */
+	{16, 7,32},  /* DARK -> GHOST */
+	{16,16, 8},  /* DARK -> DARK */
+	{16,17, 8},  /* DARK -> FAIRY */
+	{ 8, 9, 8},  /* STEEL -> FIRE */
+	{ 8,10, 8},  /* STEEL -> WATER */
+	{ 8,12, 8},  /* STEEL -> ELECTRIC */
+	{ 8,14,32},  /* STEEL -> ICE */
+	{ 8, 5,32},  /* STEEL -> ROCK */
+	{ 8, 8, 8},  /* STEEL -> STEEL */
+	{ 8,17,32},  /* STEEL -> FAIRY */
+	{17, 9, 8},  /* FAIRY -> FIRE */
+	{17, 1,32},  /* FAIRY -> FIGHTING */
+	{17, 3, 8},  /* FAIRY -> POISON */
+	{17,15,32},  /* FAIRY -> DRAGON */
+	{17,16,32},  /* FAIRY -> DARK */
+	{17, 8, 8},  /* FAIRY -> STEEL */
+	{ 0, 7, 0},  /* NORMAL -> GHOST */
+	{ 1, 7, 0},  /* FIGHTING -> GHOST */
+};
+
+/* The last PC_TYPE_MATCHUP_FORESIGHT_COUNT rows come after the
+ * original's `$fe` marker: _CheckTypeMatchup skips them once the
+ * defender is identified (Foresight). Nothing identifies anybody
+ * yet, so the port scans all of them. */
+#define PC_TYPE_MATCHUP_FORESIGHT_COUNT 2
+
 /* name bytes, in the game's charmap (see PcSpecies.name) */
 static const uint8_t pc_species_names[2138] = {
 	0x81,0xb4,0xab,0xa1,0xa0,0xb2,0xa0,0xb4,0xb1,0x88,0xb5,0xb8,0xb2,0xa0,0xb4,0xb1,

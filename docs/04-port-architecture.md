@@ -239,7 +239,7 @@ número del asm (un `MON_*`, un `move`) siga significando lo mismo aquí:
 | Cabecera | Qué contiene |
 |---|---|
 | `gen/pokemon.h` | `pc_species[292]`: nombre (offset + longitud en un blob de charmap), los dos tipos, las seis stats base en el orden de `wBaseStats` (PS, ataque, defensa, velocidad, at. esp., def. esp.), catch rate, exp base y curva de crecimiento. También los enums de tipos (`PC_TYPE_*`, 19 valores) y de curvas (`PC_GROWTH_*`), y `pc_growth_rates[4]` con los coeficientes `a/b·n³ + c·n² + d·n − e` de `data/growth_rates.asm`. 40 KB |
-| `gen/moves.h` | `pc_moves[256]`: nombre, tipo, categoría (física/especial/estado), potencia, precisión (`-1` = no falla), PP, el número de `EFFECT_*` para BAT-03 y la probabilidad del efecto. Id 0 = `NO_MOVE`, 1..255 los movimientos. 32 KB |
+| `gen/moves.h` | `pc_moves[256]`: nombre, tipo, categoría (física/especial/estado), potencia, precisión (`-1` = no falla), PP, el número de `EFFECT_*` para BAT-03 y la probabilidad del efecto; y `pc_move_priorities` de `data/moves/priorities.asm`. Id 0 = `NO_MOVE`, 1..255 los movimientos. 33 KB |
 
 Tres reglas del original que el extractor respeta y que no se pueden adivinar leyendo el
 `.asm` por encima:
@@ -271,6 +271,27 @@ tipos, igual que el original —los pide a la tabla por su especie—, y **no gu
 PS**: lo deriva de los otros cuatro con la regla de Gen 2, así que no puede tener una
 combinación que el juego no produciría. Todavía no los usa `game.c`, así que su código
 se compila pero el enlazador lo descarta (`--gc-sections`): el `.mote` no crece.
+
+## Batalla: tipos, daño y turnos
+
+Tres módulos puros que no saben nada de Mote ni de la pantalla, para que la batalla se
+pueda probar sin emulador y la UI (BAT-07) sea la única que dibuja:
+
+| Módulo | Qué resuelve |
+|---|---|
+| `battle/type` | Escanea `pc_type_matchups` como `_CheckTypeMatchup`: cada fila que case con el tipo del movimiento y con uno de los dos del defensor dobla o parte el valor Q4 que empieza en 16, y un 0 lo corta. Tierra contra un Volador es 0 aunque no haya fila (la contesta `CheckAirborne`, que aquí es sólo el tipo). |
+| `battle/damage` | `DamagePass1..4` en su orden —`(2·nivel/5 + 2)`, por potencia, por ataque, entre defensa, entre 50, más 2— y luego el modificador Q4 (tipo y STAB juntos) y la variación de 85-100 %. Un golpe no inmune nunca baja de 1; una inmunidad es 0. |
+| `battle/turn` | Un turno completo: prioridad del movimiento, luego velocidad, luego RNG en el empate; PP descontado, un ataque por bando, el que cae no responde, y al ganar la experiencia del KO (`exp_base · nivel / 7`) entra por `mon_add_exp`, que devuelve los niveles ganados. |
+
+El estado de la batalla es un `Battle` con **punteros** a los dos mons, no copias: los
+puntos de golpe, el PP y la experiencia quedan en el equipo del jugador y en el salvaje
+que los llamó. El RNG (xorshift) vive en la estructura, así que una semilla fija da el
+mismo turno en un test o en una repetición.
+
+Lo que BAT-01 **no** hace todavía, y por eso no se finge: precisión y críticos (BAT-02),
+efectos de movimiento (BAT-03, donde vive la potencia calculada de `power = 1`), estados
+y cambios de stats (BAT-04), captura (BAT-05) y la pantalla de batalla (BAT-07). Un
+movimiento de estado gasta su PP y no hace nada más. Nada de esto lo usa aún `game.c`.
 
 ## Texto
 
@@ -635,8 +656,9 @@ que mide 268 B de `.text` para llevar la hora, la fase, el grupo de paleta y la 
 horaria. La 0.19.0 **no añade flash**: las tablas de especies y movimientos (72 KB de
 cabecera) y `mon/mon` (`9 402 B` de `.text` en su objeto) existen y compilan, pero no
 los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. La 0.20.0
-(experiencia y niveles: `mon/level` más `mon_add_exp`) tampoco mueve el `.mote` ni el
-`.bss`, por el mismo motivo. El presupuesto de flash no es
+(experiencia y niveles: `mon/level` más `mon_add_exp`) y la 0.21.0 (la batalla:
+`battle/type`, `battle/damage` y `battle/turn`) tampoco mueven el `.mote` ni el `.bss`,
+por el mismo motivo. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

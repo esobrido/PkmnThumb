@@ -690,4 +690,29 @@ static const PcMove pc_moves[PC_MOVE_COUNT + 1] = {
 	{2284, 8,18,0, 50,  -1,  1,  6,  0},  /* STRUGGLE */
 };
 
+/* Move priority (data/moves/priorities.asm); a move that is not
+ * listed has 0. Higher goes first, whatever the speed says. */
+typedef struct { uint8_t move; int8_t priority; } PcMovePriority;
+
+#define PC_MOVE_PRIORITY_COUNT 16
+
+static const PcMovePriority pc_move_priorities[PC_MOVE_PRIORITY_COUNT] = {
+	{  0, 10},
+	{203,  4},
+	{182,  4},
+	{245,  2},
+	{239,  1},
+	{140,  1},
+	{181,  1},
+	{183,  1},
+	{ 98,  1},
+	{ 18,  1},
+	{ 90, -4},
+	{ 68, -5},
+	{243, -5},
+	{ 46, -6},
+	{100, -6},
+	{120, -7},
+};
+
 #endif

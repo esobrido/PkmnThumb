@@ -14,6 +14,7 @@
 #include "gen/text.h"
 #include "text/font.h"
 #include "gen/world.h"
+#include "ow/clock.h"
 
 int main(void) {
     /* ---- texts ---- */
@@ -35,14 +36,35 @@ int main(void) {
         assert(glyphs > 0);
     }
 
+    /* ---- the clock's palettes ---- */
+    assert((int)BG_PAL_GROUPS == (int)OW_TOD_COUNT);
+    for (int g = 0; g < BG_PAL_GROUPS; g++) {
+        /* The four groups have to differ: an extractor that read the same rows
+         * four times would compile and never change the picture. */
+        int same = 1;
+        for (int i = 0; i < BG_PAL_COUNT && same; i++)
+            for (int c = 0; c < 4; c++)
+                if (bg_pal[g][i][c] != bg_pal[OW_TOD_DAY][i][c]) same = 0;
+        assert(g == OW_TOD_DAY || !same);
+        /* Slot 7 is the text palette: the same white-on-black in every group, so
+         * the menus do not change colour with the hour. */
+        for (int c = 0; c < 4; c++)
+            assert(bg_pal[g][7][c] == bg_pal[OW_TOD_DAY][7][c]);
+    }
+
     /* ---- maps and their objects ---- */
     assert(PC_MAP_COUNT > 0);
+    int timed_npcs = 0;
     for (int m = 0; m < PC_MAP_COUNT; m++) {
         const PcMapDef *map = &pc_maps[m];
         assert(map->name && *map->name);
         assert(map->w > 0 && map->h > 0);
         assert(map->blocks);
         assert(map->tileset < PC_TS_COUNT);
+        /* The header's time field is one of the six PALETTE_* constants, and the
+         * environment flag says whether the map uses the interior palette set. */
+        assert(map->pal <= OW_PAL_INDOOR);
+        assert(map->indoor <= 1);
         for (int i = 0; i < map->object_count; i++) {
             const PcObject *o = &map->objects[i];
             /* Objects are on the 16 px grid inside the map. */
@@ -53,8 +75,17 @@ int main(void) {
              * silently break if map_objects() and map_object_texts() ever
              * disagreed about which objects exist. */
             assert(o->text >= -1 && o->text < PC_TEXT_COUNT);
+            /* The time-of-day byte is 0xff (always out) or a mask of the four
+             * phases: no other bits, and never a mask that hides it all day. */
+            assert(o->time_mask == 0xff ||
+                   ((o->time_mask & 0x0f) != 0 && (o->time_mask & 0xf0) == 0));
+            if (o->time_mask != 0xff) timed_npcs++;
         }
     }
+
+    /* Some NPCs are only out at certain hours (New Bark's schoolboy is
+     * MORN|DAY), which is what makes the clock visible in the overworld. */
+    assert(timed_npcs > 0);
 
     /* At least one NPC in the starting maps can talk: the phase 1 path. */
     int talkers = 0;

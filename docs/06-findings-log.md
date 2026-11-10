@@ -548,6 +548,41 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   que se encola a sí mismo (o una cadena larga) recursa en `script_begin`. Cuatro niveles
   bastan: el original tiene **un** hueco (`wDeferredScriptAddr`).
 
+## Trampas nuevas (fase 2: día y noche)
+
+- **El campo horario del header del mapa no es la paleta.** Son dos datos distintos y
+  confundirlos cambia todos los interiores: `map_environment` (3er campo) elige **el juego
+  de paletas** (`bg_pal` de exterior o `bg_pal_indoor`), y el 8º campo
+  (`PALETTE_AUTO/DAY/NITE/MORN/EVE/INDOOR`) elige **la fase**. Por eso Elm está claro a
+  medianoche: su header dice `PALETTE_DAY`, aunque esté dentro de un edificio.
+  `LoadMapPals` + `environment_colors.asm` son la fuente, no una corazonada.
+- **Un interior sin `PALETTE_DAY` sí se oscurece, y con las paletas de exterior.** La
+  fila `.IndoorColors` de `environment_colors.asm` usa `$20-$27` (grupo `indoor`) sólo por
+  la mañana y de día; de tarde y de noche usa `$10-$17`/`$18-$1f`, que son los grupos
+  nite/eve de exterior. Suponer "interior = siempre indoor" acierta en este build (los
+  cinco interiores son `PALETTE_DAY`) y falla en cuanto entre un mapa con `PALETTE_AUTO`.
+- **`MOTE_DT_MS` no acelera el reloj más allá de 0,1 s por frame.** `mote_os.c` recorta
+  `dt` a 0,1 (`if (dt > 0.1f) dt = 0.1f`), así que con `MOTE_DT_MS=1000` el reloj avanza
+  0,6 s de juego por frame, no 6 s: para ver la noche hubo que llegar al frame 111 000
+  (~3m44s de host). Medir el reloj con `MOTE_DT_MS` pequeño da la falsa impresión de que
+  no funciona — el log `tod:` es lo que dice la verdad.
+- **El reloj no se para con un menú abierto.** Es tentador colgarlo del camino de
+  `g_update` que mueve al jugador, pero en el original el RTC corre siempre; si se para,
+  una cutscene larga "congela" la hora. El coste de llevarlo arriba del todo es un
+  `while` que casi nunca itera.
+- **Un NPC fuera de hora no es un NPC invisible.** Si sólo se salta el dibujado, sigue
+  bloqueando su celda y contesta a A desde el aire. Hay que sacarlo también de la capa de
+  celdas (`mark_actors`), del paseo y de `try_talk`, y **no** del array de actores: los
+  guiones se refieren a los objetos por índice, así que quitar uno desplaza a todos los
+  demás.
+- **La paleta `text` (slot 7) es igual en los cuatro grupos.** Se puede fijar el grupo
+  `day` para los menús sin que cambien de color a ninguna hora; comprobarlo evita
+  "arreglar" un menú que nunca estuvo roto.
+- **Los sprites no cambian con la hora (todavía).** Las paletas OBJ del original salen de
+  los layouts CGB (`cgb_layouts.asm`), que el port no tiene: los actores se expanden una
+  vez con `pal_npc`. De noche el mapa va azul y el jugador sigue igual. Es una diferencia
+  visible, está anotada en TASKS.md y no se disimula con colores inventados.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -576,9 +611,14 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   paso del jugador desde el mismo intérprete) con los patrones de paseo por su cuenta, y
   **ejecuta texto continuo de cutscene** (`writetext`/`waitbutton`/`promptbutton`/`endtext`),
   coloca objetos (`moveobject`), recarga el mapa (`reloadmap`) y encola guiones (`sdefer`).
-- Verificado: `scripts/test.sh` (21 programas unitarios y 7 escenarios, todos en verde,
-  `test_ow_move` y `test_text_box` incluidos los 24 comandos),
-  build host y de device (82 752 B, `.bss` 3 784 B), captura headless
+- **El reloj** (`ow/clock`) acumula tiempo jugado (sin RTC, 6×: un día cada cuatro horas
+  de partida), decide la fase con las horas del original y el grupo de paleta con la
+  fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
+- Verificado: `scripts/test.sh` (22 programas unitarios y 7 escenarios, todos en verde,
+  `test_ow_move`, `test_text_box` y `test_ow_clock` incluidos),
+  build host y de device (83 776 B, `.bss` 3 808 B), las tres franjas del día en el
+  emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
+  captura headless
   (`docs/img/door.png` es la secuencia exterior → blanco → interior), la cutscene completa
   de la maestra (`artifacts/scr06.png`), movimiento con `MOTE_KEYS` y compilación sin
   warnings propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).

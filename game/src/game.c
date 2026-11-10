@@ -19,6 +19,8 @@
  *   ow/move    movement streams and walking patterns tests/unit/test_ow_move.c
  *   ow/render  the banded raster             tests/unit/test_ow_render.c
  *   ow/connect walking between two maps      tests/unit/test_ow_connect.c
+ *   ow/clock   the in-game clock and the palette group an hour picks
+ *                                            tests/unit/test_ow_clock.c
  *   gfx_sprite 2bpp expansion and blitting   tests/unit/test_gfx_sprite.c
  *
  * Geometry (identical to the Game Boy): a map "block" is one metatile, 32x32 px
@@ -45,6 +47,7 @@
 #include "ow/render.h"
 #include "ow/warp.h"
 #include "ow/connect.h"
+#include "ow/clock.h"
 #include "gfx_sprite.h"
 #include "gen/text.h"
 #include "gen/scripts.h"
@@ -62,7 +65,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.17.0");
+MOTE_GAME_VERSION("0.18.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -148,6 +151,18 @@ static int move_wait = -1;
 static int move_timer;                      /* frames left of a step_sleep */
 static OwWarp warp;                       /* the door transition in progress */
 
+/* The clock: the original's RTC has no counterpart on the Thumby (no battery, and
+ * Mote's API gives a frame delta and nothing else), so the time of day is the time
+ * played, at the no-RTC patch's 6x. It starts at 10:00, inside DAY, because there
+ * is no time-set screen to ask. */
+static OwClock clock_state;
+static float clock_acc;                   /* fractional milliseconds carried over */
+static int tod_shown = -1;                /* the phase the palettes are showing */
+/* An object_event's time mask hides an NPC outside its hours (a schoolboy who is
+ * only out in the morning); the index stays put so the scripts keep pointing at
+ * the right object. */
+static uint8_t actor_hidden[OW_MAX_ACTORS];
+
 /* ------------------------------------------------------------------- engine */
 
 /* Put the player at (x, y); if that cell is blocked (content changed), look for
@@ -191,11 +206,24 @@ static void mark_actors(void) {
     }
     for (int i = 0; i < total; i++) occupied[i] = 0;
     for (int i = 0; i < actor_count; i++) {
+        if (actor_hidden[i]) continue;
         int cx = actors[i].px >> 4, cy = actors[i].py >> 4;
         if (cx >= 0 && cx < cw && cy >= 0 && cy < map.h * 2)
             occupied[cy * cw + cx] = 1;
     }
     map.cells = occupied;
+}
+
+/* Which NPCs are out at this hour, from each object's time-of-day bits
+ * (home/map_objects.asm CheckObjectTime: one bit per phase). The blocking layer
+ * follows, so a hidden NPC blocks nothing. */
+static void refresh_actors(void) {
+    int tod = ow_clock_tod(clock_state.hour);
+    for (int i = 0; i < actor_count; i++)
+        actor_hidden[i] = !ow_clock_object_out(pc_maps[map_index].objects[i].time_mask,
+                                               tod);
+    for (int i = actor_count; i < OW_MAX_ACTORS; i++) actor_hidden[i] = 0;
+    mark_actors();
 }
 
 /* Everything a map load shares: the tables, the NPCs and their blocking layer.
@@ -263,7 +291,7 @@ static void load_map_tables(int index) {
         const PcObject *o = &d->objects[i];
         ow_actor_init(&actors[i], o->x, o->y, o->dir, o->anim);
     }
-    mark_actors();      /* before placing the player: never on top of an NPC */
+    refresh_actors();   /* before placing the player: never on top of an NPC */
 }
 
 static void load_map(int index) {
@@ -345,6 +373,7 @@ static void g_init(void) {
 
     options_defaults(&options);
     bag_init(&bag);
+    ow_clock_init(&clock_state, 10, 0);     /* the port has no time-set screen */
 
     ow_warp_init(&warp);
     load_map(PC_MAP_NEWBARKTOWN);
@@ -754,6 +783,7 @@ static void try_talk(void) {
     int tx = (player.px >> 4) + dir_dx(player.dir);
     int ty = (player.py >> 4) + dir_dy(player.dir);
     for (int i = 0; i < actor_count; i++) {
+        if (actor_hidden[i]) continue;
         if ((actors[i].px >> 4) != tx || (actors[i].py >> 4) != ty) continue;
         const PcObject *o = &pc_maps[map_index].objects[i];
         ow_actor_face(&actors[i], player.dir ^ 1);   /* face the player */
@@ -786,6 +816,28 @@ static void try_talk(void) {
 static void g_update(float dt) {
     const MoteInput *in = mote->input();
     int dir_held = held_direction(in);
+
+    /* Time passes whatever is on screen — the RTC kept running through a textbox
+     * or a menu in the original too. A phase change re-picks the palette group (see
+     * g_band) and re-checks which NPCs are out, and is logged once so a capture
+     * shows which hour it was taken at. */
+    clock_acc += dt * 1000.0f;
+    int cms = (int)clock_acc;
+    clock_acc -= (float)cms;
+    ow_clock_advance(&clock_state, (uint32_t)cms);
+    {
+        int tod = ow_clock_tod(clock_state.hour);
+        if (tod != tod_shown) {
+            static const char *const names[4] = { "morn", "day", "nite", "eve" };
+            tod_shown = tod;
+            refresh_actors();
+            char line[24], *w = line;
+            for (const char *p = "tod: "; *p; p++) *w++ = *p;
+            for (const char *p = names[tod]; *p; p++) *w++ = *p;
+            *w = 0;
+            mote->log(line);
+        }
+    }
 
     /* A warp freezes the world the way a textbox does: the fade is the door, and
      * the map swaps on the frame the screen is fully white. */
@@ -925,7 +977,8 @@ static void g_update(float dt) {
          * arrival, or its old cell stays occupied and it can never walk back
          * into it (nor can anyone else use it). */
         if (was_walking && !ow_actor_walking(&actors[i])) mark_actors();
-        if (actors[i].step_left || ow_move_running(&movers[i])) continue;
+        if (actor_hidden[i] || actors[i].step_left || ow_move_running(&movers[i]))
+            continue;
         int d = ow_wander_next(&wanders[i], &actors[i],
                                pc_maps[map_index].objects[i].move);
         if (d == OW_DIR_NONE) continue;
@@ -943,11 +996,18 @@ static void g_update(float dt) {
     }
 }
 
+/* The palette group the loaded map shows at this hour: the map's own time field
+ * and environment decide (ow/clock.h), which is why a house is bright by day and
+ * a route is not. */
+static const uint16_t (*map_pals(void))[4] {
+    int g = ow_clock_group(pc_maps[map_index].pal, pc_maps[map_index].indoor,
+                           clock_state.hour);
+    return g == OW_TOD_INDOOR ? bg_pal_indoor : bg_pal[g];
+}
+
 static void g_band(uint16_t *fb, int y0, int y1) {
-    /* Indoors the game swaps to the `indoor` palette group at any hour. */
-    const uint16_t (*pals)[4] = pc_maps[map_index].pal ? bg_pal_indoor : bg_pal;
     ow_render_band(fb, SCREEN, SCREEN, y0, y1, &map, tileset->tiles,
-                   pals, cam.x, cam.y);
+                   map_pals(), cam.x, cam.y);
 }
 
 /* ---- sprites (core0, after the bands) ----------------------------------- */
@@ -958,6 +1018,7 @@ static void g_overlay(uint16_t *fb) {
      * lower on the map covers one higher up — the GB's OAM ordering. */
     int feet[MAX_DRAW], slot_of[MAX_DRAW], n = 0;
     for (int i = 0; i < actor_count; i++) {
+        if (actor_hidden[i]) continue;
         int sx = actors[i].px - cam.x, sy = actors[i].py - cam.y;
         if (sx <= -16 || sx >= SCREEN || sy <= -16 || sy >= SCREEN) continue;
         feet[n] = actors[i].py;          /* the feet, not the top: that is what
@@ -999,18 +1060,20 @@ static void g_overlay(uint16_t *fb) {
     }
 
     /* The window goes last: it is the bottom of the screen, over map and sprites.
-     * Palettes 7 (text) are the game's own white-on-black pair. */
+     * Slot 7 is the game's text palette, the same white-on-black in all four
+     * groups, so the menus are pinned to `day` and never flicker with the hour. */
     if (textbox_is_open(&textbox))
         textbox_draw(&textbox, fb, SCREEN, 0, SCREEN, 0, SCREEN - TB_H,
-                     bg_pal[7][3], bg_pal[7][0]);
+                     bg_pal[OW_TOD_DAY][7][3], bg_pal[OW_TOD_DAY][7][0]);
     /* The pause menu goes over the world too, on the right like the original. */
     if (ui_menu_is_open(&menu))
         ui_menu_draw(&menu, &k_vars.names, fb, SCREEN, 0, SCREEN,
-                     bg_pal[7][3], bg_pal[7][0]);
+                     bg_pal[OW_TOD_DAY][7][3], bg_pal[OW_TOD_DAY][7][0]);
     /* The option screen covers the whole panel, like the original's, which hides
      * the map behind its own background. */
     if (options_is_open(&options))
-        options_draw(&options, fb, SCREEN, 0, SCREEN, bg_pal[7][3], bg_pal[7][0]);
+        options_draw(&options, fb, SCREEN, 0, SCREEN,
+                     bg_pal[OW_TOD_DAY][7][3], bg_pal[OW_TOD_DAY][7][0]);
 
     /* The door transition covers everything drawn this frame, sprites and UI
      * included: the original fades BG and OBJ palettes alike. */

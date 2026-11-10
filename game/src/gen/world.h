@@ -5,17 +5,52 @@
 
 #define BG_PAL_COUNT 8
 /* BG palettes, straight from the game: 8 slots of 4 RGB565 colours.
- * Outdoor maps use the `day` group (the port has no clock yet);
- * indoor maps use `indoor`, which the original picks at any hour. */
-static const uint16_t bg_pal[BG_PAL_COUNT][4] = {
-	{0xdffb,0xad75,0x6b4d,0x39c7}, /* gray */
-	{0xdffb,0xfcf8,0xf286,0x39c7}, /* red */
-	{0xb7ea,0x6661,0x2b80,0x39c7}, /* green */
-	{0xdffb,0x431f,0x091f,0x39c7}, /* water */
-	{0xdffb,0xffe7,0xfc01,0x39c7}, /* yellow */
-	{0xdffb,0xc4a7,0xa3c3,0x39c7}, /* brown */
-	{0xdffb,0x7fff,0x2c5f,0x39c7}, /* roof */
-	{0xffff,0xa534,0x528a,0x0000}, /* text */
+ * The groups are gfx/tilesets/bg_tiles.pal's outdoor sets in
+ * ow/clock.h's OW_TOD_* order (morn, day, nite, eve); a map picks
+ * one by its header's time field. `indoor` covers the maps pinned
+ * to PALETTE_INDOOR, at any hour. Slot 7 (text) never changes. */
+enum { BG_PAL_GROUPS = 4 };
+static const uint16_t bg_pal[BG_PAL_GROUPS][BG_PAL_COUNT][4] = {
+	{ /* morn */
+		{0xe7f0,0xad75,0x6b4d,0x39c7}, /* gray */
+		{0xe7f0,0xfcf8,0xf286,0x39c7}, /* red */
+		{0xb7ea,0x6661,0x2b80,0x39c7}, /* green */
+		{0xe7f0,0x431f,0x091f,0x39c7}, /* water */
+		{0xe7f0,0xffe7,0xfc01,0x39c7}, /* yellow */
+		{0xe7f0,0xc4a7,0xa3c3,0x39c7}, /* brown */
+		{0xe7f0,0x7fff,0x2c5f,0x39c7}, /* roof */
+		{0xffff,0xa534,0x528a,0x0000}, /* text */
+	},
+	{ /* day */
+		{0xdffb,0xad75,0x6b4d,0x39c7}, /* gray */
+		{0xdffb,0xfcf8,0xf286,0x39c7}, /* red */
+		{0xb7ea,0x6661,0x2b80,0x39c7}, /* green */
+		{0xdffb,0x431f,0x091f,0x39c7}, /* water */
+		{0xdffb,0xffe7,0xfc01,0x39c7}, /* yellow */
+		{0xdffb,0xc4a7,0xa3c3,0x39c7}, /* brown */
+		{0xdffb,0x7fff,0x2c5f,0x39c7}, /* roof */
+		{0xffff,0xa534,0x528a,0x0000}, /* text */
+	},
+	{ /* nite */
+		{0x7b98,0x5ad3,0x39cc,0x0000}, /* gray */
+		{0x7b98,0x71d1,0x6808,0x0000}, /* red */
+		{0x7b98,0x4353,0x02cd,0x0000}, /* green */
+		{0x7b98,0x2951,0x18ca,0x0000}, /* water */
+		{0xf7ab,0x8392,0x838a,0x0000}, /* yellow */
+		{0x7b98,0x624f,0x4105,0x0000}, /* brown */
+		{0x7b98,0x6b17,0x5a54,0x0000}, /* roof */
+		{0xffff,0xa534,0x528a,0x0000}, /* text */
+	},
+	{ /* eve */
+		{0xfd6e,0x9410,0x5a8a,0x3145}, /* gray */
+		{0xfd6e,0xcb92,0xc205,0x3145}, /* red */
+		{0x9de8,0x54e1,0x2280,0x3145}, /* green */
+		{0xfd6e,0x3a57,0x08d7,0x3145}, /* water */
+		{0xffe7,0xdd6a,0xcb01,0x3145}, /* yellow */
+		{0xfd6e,0xab45,0x8241,0x3145}, /* brown */
+		{0xfd6e,0x6df7,0x2357,0x3145}, /* roof */
+		{0xffff,0xa534,0x528a,0x0000}, /* text */
+	},
 };
 static const uint16_t bg_pal_indoor[BG_PAL_COUNT][4] = {
 	{0xf73a,0x9cf3,0x6b4d,0x39c7}, /* gray */
@@ -2203,6 +2238,8 @@ typedef struct {
     uint8_t move;              /* SPRITEMOVEDATA_*, the original's number */
     int16_t text;              /* index into pc_texts, -1 = none */
     uint16_t script;           /* offset in the map's script blob, $ffff = none */
+    uint8_t time_mask;         /* phases it is out in: 1 MORN, 2 DAY, 4 NITE,
+                                * 8 EVE; 0xff = always (ow/clock.h) */
 } PcObject;
 
 typedef struct {
@@ -2214,7 +2251,11 @@ typedef struct {
     uint8_t object_count;
     const PcWarp *warps;
     uint8_t warp_count;
-    uint8_t pal;                /* 0 = bg_pal (outdoor), 1 = bg_pal_indoor */
+    uint8_t pal;                /* the header's time of day (OW_PAL_*):
+                                 * PALETTE_AUTO follows the clock, the rest
+                                 * pin the map to one phase */
+    uint8_t indoor;             /* INDOOR/GATE: the interior palette set
+                                 * by day, the outdoor night one at night */
     uint8_t spawn_x, spawn_y;   /* the game's respawn point, 0 = none */
     const PcConnection *conns;
     uint8_t conn_count;
@@ -2231,11 +2272,11 @@ static const uint8_t blk_new_bark_town[108] = {
 	  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,
 };
 static const PcObject obj_new_bark_town[5] = {
-	{  48,  32, 0,3,0, 9,  8,  258},  /* tile 3,2 */
-	{  16,  96, 1,3,0, 9, -1,0xffff},  /* tile 1,6 */
-	{  96, 128, 2,0,3, 3,  6,  237},  /* tile 6,8 */
-	{ 208, 128, 3,0,0, 4,  7,  349},  /* tile 13,8 */
-	{ 112, 240, 4,0,0, 5,  0,  352},  /* tile 7,15 */
+	{  48,  32, 0,3,0, 9,  8,  258,255},  /* tile 3,2 */
+	{  16,  96, 1,3,0, 9, -1,0xffff,255},  /* tile 1,6 */
+	{  96, 128, 2,0,3, 3,  6,  237,255},  /* tile 6,8 */
+	{ 208, 128, 3,0,0, 4,  7,  349,255},  /* tile 13,8 */
+	{ 112, 240, 4,0,0, 5,  0,  352,  3},  /* tile 7,15 */
 };
 static const PcWarp warp_new_bark_town[5] = {
 	{  6,  3,  3,1,0,0},  /* -> ElmsLab #1 */
@@ -2270,12 +2311,12 @@ static const uint8_t blk_route29[270] = {
 	  1,  1,  2,  2,  3,  3,  5,  5,  5,  5,  5,  5,  5,  5,
 };
 static const PcObject obj_route29[6] = {
-	{ 800, 192, 1,0,3, 3, -1,0xffff},  /* tile 50,12 */
-	{ 464, 192, 2,0,3, 3, 31,  151},  /* tile 29,12 */
-	{ 432, 256, 4,0,0, 4, 25,  221},  /* tile 27,16 */
-	{ 240, 176, 5,0,0, 5, 26,  224},  /* tile 15,11 */
-	{ 400,  48, 3,1,0, 7, 27,  227},  /* tile 25,3 */
-	{ 208,  64, 6,0,0, 6, 28,  143},  /* tile 13,4 */
+	{ 800, 192, 1,0,3, 3, -1,0xffff,255},  /* tile 50,12 */
+	{ 464, 192, 2,0,3, 3, 31,  151,255},  /* tile 29,12 */
+	{ 432, 256, 4,0,0, 4, 25,  221,255},  /* tile 27,16 */
+	{ 240, 176, 5,0,0, 5, 26,  224,255},  /* tile 15,11 */
+	{ 400,  48, 3,1,0, 7, 27,  227,255},  /* tile 25,3 */
+	{ 208,  64, 6,0,0, 6, 28,  143,255},  /* tile 13,4 */
 };
 static const PcWarp warp_route29[1] = {
 	{ 27,  1, -1,3,0,0},  /* -> Route2946Gate #3 */
@@ -2304,11 +2345,11 @@ static const uint8_t blk_cherrygrove_city[220] = {
 	 89,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,  5,
 };
 static const PcObject obj_cherrygrove_city[5] = {
-	{ 512,  96, 7,0,0, 6, 40,   10},  /* tile 32,6 */
-	{ 624,  96, 0,2,0, 8, -1,0xffff},  /* tile 39,6 */
-	{ 400, 208, 2,0,0, 6, 53,  366},  /* tile 25,13 */
-	{ 368, 112, 8,0,0, 5, 54,  270},  /* tile 23,7 */
-	{ 112, 192, 9,3,0, 9, 38,  279},  /* tile 7,12 */
+	{ 512,  96, 7,0,0, 6, 40,   10,255},  /* tile 32,6 */
+	{ 624,  96, 0,2,0, 8, -1,0xffff,255},  /* tile 39,6 */
+	{ 400, 208, 2,0,0, 6, 53,  366,255},  /* tile 25,13 */
+	{ 368, 112, 8,0,0, 5, 54,  270,255},  /* tile 23,7 */
+	{ 112, 192, 9,3,0, 9, 38,  279,255},  /* tile 7,12 */
 };
 static const PcWarp warp_cherrygrove_city[5] = {
 	{ 23,  3, -1,2,0,0},  /* -> CherrygroveMart #2 */
@@ -2329,13 +2370,13 @@ static const uint8_t blk_elms_lab[30] = {
 	  4,  1,  4,  4,  1,  1,  1,  1,  1,  1,  1,  2,  1,  1,
 };
 static const PcObject obj_elms_lab[7] = {
-	{  80,  32,10,0,0, 6,139,  122},  /* tile 5,2 */
-	{  32, 144,11,0,3, 3,114, 1176},  /* tile 2,9 */
-	{  96,  48,12,0,0, 6, 80,  261},  /* tile 6,3 */
-	{ 112,  48,12,0,0, 6, 80,  352},  /* tile 7,3 */
-	{ 128,  48,12,0,0, 6, 80,  437},  /* tile 8,3 */
-	{  80,  48,13,1,0, 7,116, 1211},  /* tile 5,3 */
-	{  80, 176, 1,1,0, 7,119, 1291},  /* tile 5,11 */
+	{  80,  32,10,0,0, 6,139,  122,255},  /* tile 5,2 */
+	{  32, 144,11,0,3, 3,114, 1176,255},  /* tile 2,9 */
+	{  96,  48,12,0,0, 6, 80,  261,255},  /* tile 6,3 */
+	{ 112,  48,12,0,0, 6, 80,  352,255},  /* tile 7,3 */
+	{ 128,  48,12,0,0, 6, 80,  437,255},  /* tile 8,3 */
+	{  80,  48,13,1,0, 7,116, 1211,255},  /* tile 5,3 */
+	{  80, 176, 1,1,0, 7,119, 1291,255},  /* tile 5,11 */
 };
 static const PcWarp warp_elms_lab[2] = {
 	{  4, 11,  0,1,1,0},  /* -> NewBarkTown #1 */
@@ -2348,12 +2389,12 @@ static const uint8_t blk_players_house1_f[24] = {
 	 26, 27,154,  1,  1,  1,  8,  3,
 };
 static const PcObject obj_players_house1_f[6] = {
-	{ 144,  64,14,2,0, 8,158,  136},  /* tile 9,4 */
-	{  48,  32,14,1,0, 7,158,  136},  /* tile 3,2 */
-	{ 144,  64,14,2,0, 8,158,  136},  /* tile 9,4 */
-	{  96,  48,14,1,0, 7,158,  136},  /* tile 6,3 */
-	{  16,  32,14,1,0, 7,158,  136},  /* tile 1,2 */
-	{  96,  64,15,3,0, 9, -1,  183},  /* tile 6,4 */
+	{ 144,  64,14,2,0, 8,158,  136,255},  /* tile 9,4 */
+	{  48,  32,14,1,0, 7,158,  136,  1},  /* tile 3,2 */
+	{ 144,  64,14,2,0, 8,158,  136,  2},  /* tile 9,4 */
+	{  96,  48,14,1,0, 7,158,  136,  8},  /* tile 6,3 */
+	{  16,  32,14,1,0, 7,158,  136,  4},  /* tile 1,2 */
+	{  96,  64,15,3,0, 9, -1,  183,255},  /* tile 6,4 */
 };
 static const PcWarp warp_players_house1_f[3] = {
 	{  8,  7,  0,2,1,0},  /* -> NewBarkTown #2 */
@@ -2366,9 +2407,9 @@ static const uint8_t blk_players_neighbors_house[16] = {
 	 14, 54, 55, 44, 36, 37, 38, 39, 40, 41, 42, 43,  6,  9,  5,  7,
 };
 static const PcObject obj_players_neighbors_house[3] = {
-	{  80,  48,15,2,0, 8,161,    0},  /* tile 5,3 */
-	{  32,  48,16,3,0, 9,159,    3},  /* tile 2,3 */
-	{  80,  64, 4,2,0, 8,160,    6},  /* tile 5,4 */
+	{  80,  48,15,2,0, 8,161,    0,255},  /* tile 5,3 */
+	{  32,  48,16,3,0, 9,159,    3,255},  /* tile 2,3 */
+	{  80,  64, 4,2,0, 8,160,    6, 12},  /* tile 5,4 */
 };
 static const PcWarp warp_players_neighbors_house[2] = {
 	{  2,  7,  0,3,1,0},  /* -> NewBarkTown #3 */
@@ -2381,7 +2422,7 @@ static const uint8_t blk_lyras_house1_f[24] = {
 	 60, 75,  2,  8,  1,  1,  1,155,
 };
 static const PcObject obj_lyras_house1_f[1] = {
-	{  32,  48,17,3,0, 9,164,    0},  /* tile 2,3 */
+	{  32,  48,17,3,0, 9,164,    0,255},  /* tile 2,3 */
 };
 static const PcWarp warp_lyras_house1_f[3] = {
 	{  2,  7,  0,4,1,0},  /* -> NewBarkTown #4 */
@@ -2394,8 +2435,8 @@ static const uint8_t blk_elms_house[16] = {
 	 14, 52, 48, 50, 76, 77, 78,  1, 80, 81, 82, 11, 84, 85, 86,  1,
 };
 static const PcObject obj_elms_house[2] = {
-	{  16,  80, 2,0,0, 4,169,    0},  /* tile 1,5 */
-	{  64,  80,18,1,0, 7,170,    3},  /* tile 4,5 */
+	{  16,  80, 2,0,0, 4,169,    0,255},  /* tile 1,5 */
+	{  64,  80,18,1,0, 7,170,    3,255},  /* tile 4,5 */
 };
 static const PcWarp warp_elms_house[2] = {
 	{  7,  4,  0,5,1,3},  /* -> NewBarkTown #5 */
@@ -2412,14 +2453,14 @@ static const PcWarp warp_elms_house[2] = {
 #define PC_MAP_LYRASHOUSE1F 6
 #define PC_MAP_ELMSHOUSE 7
 static const PcMapDef pc_maps[PC_MAP_COUNT] = {
-	{ "NewBarkTown", 12, 9, blk_new_bark_town, 0, obj_new_bark_town, 5, warp_new_bark_town, 5, 0, 15, 6, conn_new_bark_town, 2 },
-	{ "Route29", 30, 9, blk_route29, 0, obj_route29, 6, warp_route29, 1, 0, 0, 0, conn_route29, 3 },
-	{ "CherrygroveCity", 20, 11, blk_cherrygrove_city, 0, obj_cherrygrove_city, 5, warp_cherrygrove_city, 5, 0, 29, 4, conn_cherrygrove_city, 3 },
-	{ "ElmsLab", 5, 6, blk_elms_lab, 1, obj_elms_lab, 7, warp_elms_lab, 2, 1, 0, 0, 0, 0 },
-	{ "PlayersHouse1F", 6, 4, blk_players_house1_f, 2, obj_players_house1_f, 6, warp_players_house1_f, 3, 1, 0, 0, 0, 0 },
-	{ "PlayersNeighborsHouse", 4, 4, blk_players_neighbors_house, 2, obj_players_neighbors_house, 3, warp_players_neighbors_house, 2, 1, 0, 0, 0, 0 },
-	{ "LyrasHouse1F", 6, 4, blk_lyras_house1_f, 2, obj_lyras_house1_f, 1, warp_lyras_house1_f, 3, 1, 0, 0, 0, 0 },
-	{ "ElmsHouse", 4, 4, blk_elms_house, 2, obj_elms_house, 2, warp_elms_house, 2, 1, 0, 0, 0, 0 },
+	{ "NewBarkTown", 12, 9, blk_new_bark_town, 0, obj_new_bark_town, 5, warp_new_bark_town, 5, 0, 0, 15, 6, conn_new_bark_town, 2 },
+	{ "Route29", 30, 9, blk_route29, 0, obj_route29, 6, warp_route29, 1, 0, 0, 0, 0, conn_route29, 3 },
+	{ "CherrygroveCity", 20, 11, blk_cherrygrove_city, 0, obj_cherrygrove_city, 5, warp_cherrygrove_city, 5, 0, 0, 29, 4, conn_cherrygrove_city, 3 },
+	{ "ElmsLab", 5, 6, blk_elms_lab, 1, obj_elms_lab, 7, warp_elms_lab, 2, 1, 1, 0, 0, 0, 0 },
+	{ "PlayersHouse1F", 6, 4, blk_players_house1_f, 2, obj_players_house1_f, 6, warp_players_house1_f, 3, 1, 1, 0, 0, 0, 0 },
+	{ "PlayersNeighborsHouse", 4, 4, blk_players_neighbors_house, 2, obj_players_neighbors_house, 3, warp_players_neighbors_house, 2, 1, 1, 0, 0, 0, 0 },
+	{ "LyrasHouse1F", 6, 4, blk_lyras_house1_f, 2, obj_lyras_house1_f, 1, warp_lyras_house1_f, 3, 1, 1, 0, 0, 0, 0 },
+	{ "ElmsHouse", 4, 4, blk_elms_house, 2, obj_elms_house, 2, warp_elms_house, 2, 1, 1, 0, 0, 0, 0 },
 };
 
 #endif

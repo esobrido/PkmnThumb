@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **28 hechos · 8 parciales · 57 pendientes** (el conteo incluye las tablas
+Progreso: **29 hechos · 8 parciales · 56 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -18,10 +18,10 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 | ID | Sistema | Original | Equivalente en el port | Estado |
 |---|---|---|---|---|
 | SYS-01 | Raster de tiles (LCD) | `home/lcd.asm` | `ow/render.c`, invocado desde `game.c` | ✅ |
-| SYS-02 | Paletas BG/OAM | `home/palettes.asm` | `bg_pal[]`, expansión a RGB565 | 🟡 sólo BG, sólo grupo `day` |
+| SYS-02 | Paletas BG/OAM | `home/palettes.asm` | `bg_pal[4 grupo][8]` + `bg_pal_indoor`, expansión a RGB565 | 🟡 BG completo (4 franjas + interior); las paletas OBJ siguen fijas |
 | SYS-03 | OAM / sprites | `home/sprites.asm` | `gfx_sprite.c` + overlay en `game.c` | 🟡 frame 0, sin prioridad fina |
 | SYS-04 | Joypad | `home/joypad.asm` | `mote->input()` → `MoteInput` (`held`/`just_pressed`), `mote_pressed()` | ✅ |
-| SYS-05 | Reloj y RTC | `home/time.asm`, `engine/rtc/` | **no hay reloj en la API** (sólo `dt`): acumular tiempo de juego y, si se quiere hora real, leer el RTC del RP2350 desde la capa de OS | ⬜ |
+| SYS-05 | Reloj y RTC | `home/time.asm`, `engine/rtc/` | `ow/clock.c`: tiempo de juego acumulado desde el `dt` (no hay RTC), 6× como el parche sin RTC del original | 🟡 hora real (RTC del RP2350 desde la capa de OS) y guardado de la hora, pendientes |
 | SYS-06 | VBlank / IRQ | `home/vblank.asm` | `render_band` + `overlay` | ✅ |
 | SYS-07 | Copia de datos (bankswitch) | `home/copy.asm` | XIP directo (no hace falta) | ✅ N/A |
 | SYS-08 | SRAM / guardado | `home/sram.asm` | `mote->save/load/kv_*` | ⬜ |
@@ -42,7 +42,7 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 | OW-08 | Warps y conexiones entre mapas | `engine/overworld/warp.asm` | 🟡 puertas y alfombras de los 8 mapas, con fade de 10+10; faltan conexiones (andar entre mapas) y escaleras a pisos sin extraer |
 | OW-09 | Escenas y coord/bg events | `engine/events/std_scripts.asm` | ⬜ |
 | OW-10 | Cambio de tileset y animación de tiles | `engine/tilesets/` | ⬜ (agua animada) |
-| OW-11 | Día/noche, tiempo | `engine/rtc/` | ⬜ (depende de SYS-05) |
+| OW-11 | Día/noche, tiempo | `engine/rtc/` | 🟡 hecho con SCR-08: reloj de tiempo jugado, paletas por franja y NPCs por horario; hora real y paletas OBJ dependen de SYS-05/SYS-02 |
 | OW-12 | Bicicleta, surf, headbutt, etc. | `engine/overworld/*` | ⬜ |
 | OW-13 | Followers (PC los tiene) | `engine/overworld/followers.asm` | ⬜ |
 
@@ -227,7 +227,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M | ✅ las 18 escenas de los 5 mapas que tienen tabla y los 23 `coord_event`, disparados al terminar el paso sobre su celda; `setscene`/`setmapscene`/`checkscene`/`checkmapscene` en la VM (con el 0 que `checkscene` lee como "ninguna"). Verificado andando: la maestra de New Bark Town para al jugador con `Text_WaitPlayer` y su escena corre hasta el final (gracias a SCR-06, que le da el movimiento) |
 | SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M | ✅ 56 bloques de movimiento (259 B) dentro del blob de cada mapa, como offsets detrás de las etiquetas de script, con los bloques que caen por fallthrough concatenados; `applymovement`/`applymovementlasttalked`/`applyonemovement` (pasos inline hasta el `step_end`) y `follow`/`stopfollow` en la VM. Verificado: la cutscene de la maestra de New Bark Town corre entera — 4 pasos hacia el jugador, texto, 4 pasos de vuelta siguiéndola, texto — y el log acaba en `script: stopped at 0x0f` (`special RestartMapMusic`); `artifacts/scr06.png` |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M | ✅ el movimiento ya estaba con SCR-06; lo que faltaba era lo que ocurre *entre* pasos y ya está en la VM: `writetext` imprime y **sigue** (la caja queda abierta, el guion no se congela), `waitbutton`/`promptbutton` esperan a que el jugador la cierre, `endtext`/`waitendtext` cierran y acaban, `moveobject` coloca un objeto en otra celda sin andar, `reloadmap` recarga el mapa bajo el jugador y corta el guion, `sdefer` encola un guion para después y `reanchormap` se consume sin efecto (el mapa es estático). Verificado: la cutscene de la maestra sigue corriendo entera (`artifacts/scr06.png`) y Elm ya habla desde su bytecode —su script empieza por `checkevent` + `iftrue_jumpopenedtext` y el log ya no escribe `script: stopped`— con la receta de `docs/05` |
-| SCR-08 | Día/noche con RTC y cambio de paletas | M |
+| SCR-08 | Día/noche con RTC y cambio de paletas | M | ✅ `ow/clock` acumula tiempo jugado (sin RTC en el hardware, `dt` de Mote; 6× como el original sin RTC: un día cada cuatro horas de partida), con las fronteras del original (5/9/17/21 y todo lo previo a las 5 es NITE), arranque a las 10:00 y log `tod: <fase>` al cambiar. El extractor emite las cuatro franjas de `bg_tiles.pal` (`bg_pal[4][8][4]`) y el **campo horario del header** de cada mapa (`PALETTE_AUTO/DAY/...`, antes supuesto por entorno), y `ow_clock_group` elige grupo con fase + entorno + header: exterior por su fase, interior con el grupo `indoor` de mañana/día y los de exterior nite/eve de tarde/noche. Los NPCs con horario (`object_event` campo 7) se esconden fuera de su fase: no se dibujan, no bloquean ni hablan. Verificado con las tres franjas en el emulador (`artifacts/tod_*.png`) y `test_ow_clock`. Queda el grupo `water` (slot 3) y las **paletas OBJ**, que dependen de los layouts CGB |
 
 **Puerta F2**: recorrer New Bark Town → Ruta 29 → Cherrygrove con warps reales, hablar
 con Elm y que su script se ejecute del bytecode original.
@@ -238,8 +238,10 @@ cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log 
 `connect: Route29` y `connect: CherrygroveCity` por el camino. Hablar con Elm ya salía de
 su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta: los
 `coord_event` disparan, la cutscene de la maestra **se completa** (SCR-06) y las cutscenes
-ya tienen texto continuo y `moveobject` (SCR-07); queda SCR-08 (día/noche, que arrastra
-SYS-05: la API de Mote no da reloj) y los `special`/`jumpstd`/`readvar` que aún paran la VM.
+ya tienen texto continuo y `moveobject` (SCR-07) y el día/noche con paletas y NPCs por
+horario (SCR-08). Con la fase cerrada, lo único que sigue parando guiones son
+`special`/`jumpstd`/`readvar`/`yesorno`, que arrastran sistemas de las fases 3 y 4, y las
+paletas OBJ/hora real (SYS-02/SYS-05) que no bloquean ninguna puerta.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 

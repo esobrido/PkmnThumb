@@ -237,13 +237,77 @@ def map_spawns(pc):
     return out
 
 
+def map_fields(pc, map_name):
+    """The `map` macro arguments after the name, from data/maps/maps.asm.
+
+    The line is `map <Name>, <tileset>, <env>, <sign>, <landmark>, <music>,
+    <phone>, <time of day>` (macros/scripts/maps.asm), so the list is
+    [tileset, env, sign, landmark, music, phone, time of day].
+    """
+    txt = read(os.path.join(pc, "data/maps/maps.asm"))
+    m = re.search(r"^\s*map\s+%s\s*,\s*(.+)$" % map_name, txt, re.M)
+    if not m:
+        die("no map header for %s" % map_name)
+    fields = [x.strip() for x in split_args(m.group(1).split(";")[0])]
+    if len(fields) != 7:
+        die("%s: map header has %d fields, expected 7: %r"
+            % (map_name, len(fields), m.group(1)))
+    return fields
+
+
 def map_environment(pc, map_name):
     """The 3rd field of `map <Name>, TILESET_X, <ENV>, ...` (INDOOR, TOWN, ...)."""
-    txt = read(os.path.join(pc, "data/maps/maps.asm"))
-    m = re.search(r"^\s*map\s+%s\s*,\s*TILESET_\w+\s*,\s*(\w+)" % map_name, txt, re.M)
-    if not m:
-        die("no environment for %s" % map_name)
-    return m.group(1)
+    return map_fields(pc, map_name)[1]
+
+
+# PALETTE_* of constants/map_data_constants.asm, in the original's numbering, and
+# the bits of an object_event's time-of-day field (home/map_objects.asm,
+# CheckObjectTime: one bit per phase, -1 meaning always).
+MAP_PALETTES = {"PALETTE_AUTO": 0, "PALETTE_DAY": 1, "PALETTE_NITE": 2,
+                "PALETTE_MORN": 3, "PALETTE_EVE": 4, "PALETTE_INDOOR": 5}
+TOD_BITS = {"MORN": 0, "DAY": 1, "NITE": 2, "EVE": 3}
+
+
+def map_time_palette(pc, map_name):
+    """The map header's time-of-day palette, as a PC_PAL_* number 0..5.
+
+    PALETTE_AUTO follows the clock; the rest pin the map to one palette group,
+    which is why a house is bright at midnight and a route is not. A map marked
+    IN_DARKNESS wants Flash before it can be lit, and the port has no Flash, so
+    taking one into the build is an extraction error rather than a black map.
+    """
+    field = map_fields(pc, map_name)[6]
+    parts = [p.strip() for p in field.split("|")]
+    if "IN_DARKNESS" in parts:
+        die("%s: the map header asks for IN_DARKNESS (Flash); the port has no "
+            "Flash, so it cannot be taken into the build" % map_name)
+    if len(parts) != 1 or parts[0] not in MAP_PALETTES:
+        die("%s: unknown map palette %r" % (map_name, field))
+    return MAP_PALETTES[parts[0]]
+
+
+def object_time_mask(map_name, expr):
+    """`object_event`'s time-of-day field -> a byte (0xff = every phase).
+
+    The field is a bit mask of `1 << MORN` and friends, or -1. home/map_objects
+    .asm (CheckObjectTime) shows an object only when its phase's bit is set, so
+    an NPC with `(1 << MORN) | (1 << DAY)` is gone at night.
+    """
+    s = expr.strip()
+    if s in ("-1", "$ff", "255"):
+        return 0xff
+    bits = re.findall(r"1\s*<<\s*(\w+)", s)
+    if not bits:
+        try:
+            return int(s, 0) & 0xff
+        except ValueError:
+            die("%s: unreadable object time-of-day %r" % (map_name, expr))
+    mask = 0
+    for name in bits:
+        if name not in TOD_BITS:
+            die("%s: unknown time of day %r" % (map_name, name))
+        mask |= 1 << TOD_BITS[name]
+    return mask
 
 
 # ---------------------------------------------------------------------- tileset
@@ -318,9 +382,11 @@ def bg_palettes(pc, tod="day"):
     """gfx/tilesets/bg_tiles.pal -> 8 palettes of 4 RGB565 colours.
 
     The table is `morn, day, night, eve, indoor, water` x 8 palette slots
-    (gray, red, green, water, yellow, brown, roof, text). Colours are 5-bit.
-    Outdoor maps use one group per time of day (the port stays on `day`), and
-    indoor maps use `indoor` at any hour, which is why both are extracted.
+    (gray, red, green, water, yellow, brown, roof, text). Colours are 5-bit, and
+    slot 7 (text) is the same white-on-black in every group. An outdoor map with
+    PALETTE_AUTO picks its group from the clock, a PALETTE_DAY/NITE/MORN/EVE map
+    is pinned to one, and `indoor` is the fifth group. `water` is the animated
+    water palette, which the port does not swap in yet.
     """
     groups = ["morn", "day", "night", "eve", "indoor", "water"]
     txt = read(os.path.join(pc, "gfx/tilesets/bg_tiles.pal"))
@@ -460,7 +526,10 @@ ANIM = {
 
 
 def map_objects(pc, map_name, consts):
-    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, move, script).
+    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, move, script, time).
+
+    `time` is the object's time-of-day mask: a bit per phase, 0xff for an NPC
+    that is always there (see object_time_mask).
 
     Coordinates are in 16x16 px tiles (the same grid the player walks on), not
     in 32px map blocks — an object_event y of 15 on a 9-block-tall map only fits
@@ -499,7 +568,8 @@ def map_objects(pc, map_name, consts):
         if a[3] not in consts:
             die("%s: %r is not a SPRITEMOVEDATA_* constant" % (map_name, a[3]))
         out.append((int(a[0]), int(a[1]), a[2], FACING.get(a[3], 0),
-                    ANIM.get(a[3], 0), consts[a[3]], spec))
+                    ANIM.get(a[3], 0), consts[a[3]], spec,
+                    object_time_mask(map_name, a[6])))
     return out
 
 
@@ -2378,16 +2448,26 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
         f.write("#ifndef PC_GEN_WORLD_H\n#define PC_GEN_WORLD_H\n#include <stdint.h>\n\n")
 
         names = ["gray", "red", "green", "water", "yellow", "brown", "roof", "text"]
-        f.write("#define BG_PAL_COUNT %d\n" % len(pals))
+        f.write("#define BG_PAL_COUNT %d\n" % len(pals[0]))
         f.write("/* BG palettes, straight from the game: 8 slots of 4 RGB565 colours.\n"
-                " * Outdoor maps use the `day` group (the port has no clock yet);\n"
-                " * indoor maps use `indoor`, which the original picks at any hour. */\n")
-        for label, table in (("bg_pal", pals), ("bg_pal_indoor", pals_indoor)):
-            f.write("static const uint16_t %s[BG_PAL_COUNT][4] = {\n" % label)
+                " * The groups are gfx/tilesets/bg_tiles.pal's outdoor sets in\n"
+                " * ow/clock.h's OW_TOD_* order (morn, day, nite, eve); a map picks\n"
+                " * one by its header's time field. `indoor` covers the maps pinned\n"
+                " * to PALETTE_INDOOR, at any hour. Slot 7 (text) never changes. */\n")
+        f.write("enum { BG_PAL_GROUPS = 4 };\n")
+        f.write("static const uint16_t bg_pal[BG_PAL_GROUPS][BG_PAL_COUNT][4] = {\n")
+        for label, table in zip(("morn", "day", "nite", "eve"), pals):
+            f.write("\t{ /* %s */\n" % label)
             for i, p in enumerate(table):
-                f.write("\t{" + ",".join("0x%04x" % c for c in p) + "}, /* %s */\n"
+                f.write("\t\t{" + ",".join("0x%04x" % c for c in p) + "}, /* %s */\n"
                         % names[i])
-            f.write("};\n")
+            f.write("\t},\n")
+        f.write("};\n")
+        f.write("static const uint16_t bg_pal_indoor[BG_PAL_COUNT][4] = {\n")
+        for i, p in enumerate(pals_indoor):
+            f.write("\t{" + ",".join("0x%04x" % c for c in p) + "}, /* %s */\n"
+                    % names[i])
+        f.write("};\n")
         f.write("\n")
 
         f.write("/* ---- tilesets ---- */\n")
@@ -2488,6 +2568,8 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t move;              /* SPRITEMOVEDATA_*, the original's number */\n"
                 "    int16_t text;              /* index into pc_texts, -1 = none */\n"
                 "    uint16_t script;           /* offset in the map's script blob, $ffff = none */\n"
+                "    uint8_t time_mask;         /* phases it is out in: 1 MORN, 2 DAY, 4 NITE,\n"
+                "                                * 8 EVE; 0xff = always (ow/clock.h) */\n"
                 "} PcObject;\n\n")
         f.write("typedef struct {\n"
                 "    const char *name;\n"
@@ -2498,7 +2580,11 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t object_count;\n"
                 "    const PcWarp *warps;\n"
                 "    uint8_t warp_count;\n"
-                "    uint8_t pal;                /* 0 = bg_pal (outdoor), 1 = bg_pal_indoor */\n"
+                "    uint8_t pal;                /* the header's time of day (OW_PAL_*):\n"
+                "                                 * PALETTE_AUTO follows the clock, the rest\n"
+                "                                 * pin the map to one phase */\n"
+                "    uint8_t indoor;             /* INDOOR/GATE: the interior palette set\n"
+                "                                 * by day, the outdoor night one at night */\n"
                 "    uint8_t spawn_x, spawn_y;   /* the game's respawn point, 0 = none */\n"
                 "    const PcConnection *conns;\n"
                 "    uint8_t conn_count;\n"
@@ -2516,12 +2602,12 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
             if m["objects"]:
                 f.write("static const PcObject obj_%s[%d] = {\n"
                         % (ident, len(m["objects"])))
-                for (tx, ty, si, direction, anim, move, script), text in zip(
+                for (tx, ty, si, direction, anim, move, tod, script), text in zip(
                         m["objects"], m["obj_text"]):
-                    f.write("\t{%4d,%4d,%2d,%d,%d,%2d,%3d,%s},  /* tile %d,%d */\n"
+                    f.write("\t{%4d,%4d,%2d,%d,%d,%2d,%3d,%s,%3d},  /* tile %d,%d */\n"
                             % (tx * 16, ty * 16, si, direction, anim, move, text,
                                "%5d" % script if script != 0xffff else "0xffff",
-                               tx, ty))
+                               tod, tx, ty))
                 f.write("};\n")
             if m["warps"]:
                 f.write("static const PcWarp warp_%s[%d] = {\n"
@@ -2547,11 +2633,11 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
         f.write("static const PcMapDef pc_maps[PC_MAP_COUNT] = {\n")
         for mi, m in enumerate(maps):
             ident = ctok(m["name"])
-            f.write('\t{ "%s", %d, %d, blk_%s, %d, %s, %d, %s, %d, %d, %d, %d, %s, %d },\n'
+            f.write('\t{ "%s", %d, %d, blk_%s, %d, %s, %d, %s, %d, %d, %d, %d, %d, %s, %d },\n'
                     % (m["name"], m["w"], m["h"], ident, m["ts"],
                        "obj_" + ident if m["objects"] else "0", len(m["objects"]),
                        "warp_" + ident if m["warps"] else "0", len(m["warps"]),
-                       m["pal"], m["spawn"][0], m["spawn"][1],
+                       m["pal"], m["indoor"], m["spawn"][0], m["spawn"][1],
                        "conn_" + ident if m["conns"] else "0", len(m["conns"])))
         f.write("};\n\n#endif\n")
 
@@ -2650,7 +2736,7 @@ def main():
         objects = []
         obj_text = []
         obj_specs = []
-        for (bx, by, spr, direction, anim, move, spec), found in zip(
+        for (bx, by, spr, direction, anim, move, spec, tod), found in zip(
                 map_objects(pc, map_name, defs["consts"]), obj_labels):
             obj_specs.append(spec)
             name = spr[len("SPRITE_"):].lower()
@@ -2661,7 +2747,7 @@ def main():
                     continue
                 idx = len(sprites)
                 sprites.append((name, frames))
-            objects.append((bx, by, idx, direction, anim, move))
+            objects.append((bx, by, idx, direction, anim, move, tod))
             if found is None:
                 obj_text.append(-1)
             else:
@@ -2787,13 +2873,16 @@ def main():
         maps.append({"name": map_name, "w": w, "h": h, "blocks": blocks, "ts": ti,
                      "objects": objects, "obj_text": obj_text, "warps": warps,
                      "conns": conns,
-                     "pal": 1 if env in ("INDOOR", "GATE") else 0,
+                     "pal": map_time_palette(pc, map_name),
+                     "indoor": 1 if env in ("INDOOR", "GATE") else 0,
                      "spawn": map_spawn.get(map_name, (0, 0))})
         print("map      %-20s %2dx%-2d blocks (%3dx%-3d px)  tileset %-20s obj %d warp %d conn %d"
               % (map_name, w, h, w * 32, h * 32, ts, len(objects), len(warps),
                  len(conns)))
 
-    pals = bg_palettes(pc)
+    # The four outdoor groups, in ow/clock.h's OW_TOD_* order (morn, day, nite,
+    # eve), then the indoor set.
+    pals = [bg_palettes(pc, g) for g in ("morn", "day", "night", "eve")]
     pals_indoor = bg_palettes(pc, "indoor")
     player = sprite_frames(pc, args.player)
     if not player:

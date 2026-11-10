@@ -11,7 +11,7 @@ tilesets (2bpp) y paletas BG              VM de scripts
 sprites de overworld                      motor de batalla y animaciones
 textos (desde las fuentes .asm)           menús, UI, Pokédex, PC, Pokégear
 base_stats / moves / items                audio y mezcla
-música (re-expresada)                     guardado, RTC/día-noche
+música (re-expresada)                     guardado, reloj (el RTC no existe)
 ```
 
 ## Forma del módulo
@@ -159,11 +159,61 @@ con la dirección todavía pulsada. El original no rebota porque aterrizar no es
 el port tampoco, por dos motivos a la vez: la estera sólo dispara con el pad apretado y
 el paso bloqueado, y además `OwWarp.armed` queda a 0 hasta que se suelte el pad.
 
-### Paleta del interior
+### Paletas: la franja que elige la hora
 
-`PcMapDef.pal` elige `bg_pal` (exterior, franja horaria) o `bg_pal_indoor` (grupo
-`indoor` de `bg_tiles.pal`), y `g_band` cambia de tabla en cada mapa. Sin eso el
-interior de una casa sale con los verdes del pueblo.
+`gfx/tilesets/bg_tiles.pal` no tiene una paleta BG sino **cinco grupos de ocho**: `morn`,
+`day`, `nite`, `eve` e `indoor`, más un sexto grupo `water` con una fila por franja. El
+extractor emite los cuatro de exterior como `bg_pal[4][8][4]` (orden `OW_TOD_*`: morn,
+day, nite, eve) y el de interior como `bg_pal_indoor[8][4]`; el slot 7 (texto) es el
+mismo blanco-sobre-negro en los cuatro, así que los menús se quedan en el grupo `day`.
+
+Qué grupo usa un mapa lo deciden dos datos del original, no una heurística
+(`engine/gfx/color.asm LoadMapPals` → `data/maps/environment_colors.asm`):
+
+| | Elige |
+|---|---|
+| `map_environment` = TOWN/ROUTE/ISOLATED/CAVE/DUNGEON | el grupo de exterior de **su fase** |
+| `map_environment` = INDOOR/GATE | `indoor` por la mañana y de día; los grupos **nite/eve de exterior** de tarde y de noche |
+| `PcMapDef.pal` (campo horario del header) | `PALETTE_AUTO` sigue al reloj; `PALETTE_DAY/NITE/MORN/EVE` fijan la fase; `PALETTE_INDOOR` fuerza el grupo de interior |
+
+De ahí salen dos cosas que parecen raras y son fieles: una casa **sin** `PALETTE_DAY`
+(ninguna de este build) se pone azul de noche, y una casa con `PALETTE_DAY` —Elm, la
+tuya— sigue clara a las 23:00. Los dos mapas de exterior del build son `PALETTE_AUTO`
+(New Bark Town, Ruta 29, Ciudad Cerezo) y los cinco interiores son `PALETTE_DAY`.
+
+Falta el grupo `water`: el original sustituye el slot 3 de exterior por su fila `water`
+(de ahí los índices `$28-$2b` de `EnvironmentColorsPointers`), y el port usa el slot 3
+del grupo normal. Son colores de agua animada, no un cambio de fondo.
+
+## El reloj: día y noche
+
+El Thumby Color no tiene RTC (ni pila) y la API de Mote sólo da un `dt` por frame, así
+que el port acumula **tiempo jugado**: `ow/clock` con `hour/minute/second` y
+`ow_clock_advance(ms)`. Es el camino que el propio original trae para cartuchos sin RTC:
+un segundo de juego por segundo real y el reloj **6× por delante**
+(`NO_RTC_SPEEDUP`), o sea un día cada cuatro horas de partida
+(`data/options/initial_options_descriptions.asm` lo dice con esas palabras).
+
+Las fronteras son las del original (`constants/misc_constants.asm`): MORN a las 5, DAY a
+las 9, EVE a las 17, NITE a las 21, y todo lo anterior a las 5 cuenta como NITE porque
+`GetTimeOfDay` sustituye la hora por `NITE_HOUR` (`ow_clock_tod`). La partida empieza a
+las **10:00**, dentro de DAY, porque el port no tiene pantalla de puesta en hora ni
+puede preguntarle al hardware.
+
+Un cambio de fase hace dos cosas en `game.c`: `g_band` pasa a elegir otro grupo de
+paletas (sin fundido: el original recarga paletas, no hace `FadeOutPalettes`) y
+`refresh_actors()` vuelve a decidir qué NPCs están fuera. El reloj corre **también** con
+el textbox o el menú abiertos, porque en el original el RTC no se para al abrir un
+menú. La hora actual se registra una vez por fase (`tod: eve`) para que una captura
+diga a qué hora se tomó.
+
+Los NPCs con horario son el otro lado del día/noche: cada `object_event` lleva una
+máscara de cuatro bits (un bit por fase, `-1` = siempre; `home/map_objects.asm
+CheckObjectTime`) y `ow_clock_object_out()` decide si sale. Un NPC fuera de hora no se
+dibuja, no bloquea su celda y no contesta a A; su índice en la tabla no cambia, así que
+los guiones siguen apuntando al objeto correcto. En este build hay seis NPCs con horario
+(el colegial de New Bark Town sale `MORN|DAY`, y en Ciudad Cerezo hay otros con 1, 2, 4,
+8 y 12) y el resto sale siempre.
 
 ## Actores: orientación, animación y orden de dibujado
 
@@ -521,13 +571,13 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **82 752 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 784 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor) + el `sdefer` pendiente) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **83 776 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 808 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor) + el `sdefer` pendiente + el reloj y la máscara de horario de los actores) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 82 752 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 83 776 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
 las puertas añaden menos de 1 KB más)—, los diálogos, la fuente, el menú y desde 0.16.0
@@ -537,7 +587,11 @@ intérprete (`ow/move.c` mide 512 B de `.text`), lo que se añade a `ow/actor.c`
 `game.c` y las tablas de etiquetas `Movement_*`. La 0.17.0 añade 556 B más
 (82 196 → 82 752, `script/vm.c` mide 2 968 B de `.text`): el texto continuo, `moveobject`,
 `reloadmap` y el `sdefer`, que no llevan datos nuevos —todo son opcodes ya presentes en
-los blobs— sino código de la VM y del despachador. El presupuesto de flash no es
+los blobs— sino código de la VM y del despachador. La 0.18.0 añade 1 024 B más
+(82 752 → 83 776): tres tablas de paleta BG completas (192 B de datos nuevos, porque el
+grupo `day` ya estaba), los ocho bytes nuevos por objeto (`time_mask`) y `ow/clock.c`,
+que mide 268 B de `.text` para llevar la hora, la fase, el grupo de paleta y la máscara
+horaria. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

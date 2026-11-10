@@ -11,6 +11,7 @@
 #define OW_ACTOR_H
 
 #include "ow/dir.h"
+#include "ow/map.h"
 
 enum {
     OW_ANIM_STAND = 0,
@@ -31,6 +32,8 @@ typedef struct {
     int dir;           /* OW_DIR_* */
     int anim;          /* OW_ANIM_* */
     int step_left;     /* pixels still to walk in the current step, 0 = standing */
+    int step_frames;   /* frames the whole 16 px step takes (see ow/move.h) */
+    int step_acc;      /* frames walked of it so far: px = 16 * acc / frames */
     int walk_timer;    /* pixels walked, drives the 2-frame walk cycle */
     int spin_timer;    /* frames since the last in-place turn */
     uint32_t rng;      /* seeded from the position: screenshots stay reproducible */
@@ -38,7 +41,20 @@ typedef struct {
 
 void ow_actor_init(OwActor *a, int px, int py, int dir, int anim);
 
-/* Advance `frames` updates. Returns 1 if the NPC turned. */
+/* Start a 16 px step towards `dir` over `frames` frames (OW_STEP_* in ow/move.h).
+ * The facing changes with the step, as the original's step functions do. */
+void ow_actor_start_step(OwActor *a, int dir, int frames);
+
+/* 1 while a step is under way, i.e. the actor is between two cells. */
+int ow_actor_walking(const OwActor *a);
+
+/* The next number of the actor's own generator: deterministic for a position, so
+ * a screenshot of frame N is the same frame every run. */
+uint16_t ow_actor_rand(OwActor *a);
+
+/* Advance `frames` updates, walking a step and/or spinning in place. Returns 1
+ * if the NPC turned. A spinner that has been told to walk stops turning until it
+ * stands again: the walk owns the facing while it lasts. */
 int ow_actor_update(OwActor *a, int frames);
 
 /* Turn to a direction and stand still: what talking to an NPC does. */

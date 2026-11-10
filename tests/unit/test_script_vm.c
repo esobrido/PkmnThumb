@@ -9,6 +9,7 @@
 
 #include "gen/text.h"
 #include "gen/world.h"
+#include "gen/move.h"
 #include "gen/scripts.h"
 #include "script/vm.h"
 
@@ -233,6 +234,81 @@ static void test_real_script(void) {
     CHECK(out.a < PC_TEXT_COUNT, "and the index is inside pc_texts");
 }
 
+/* `applyonemovement` carries its steps inline, so the VM has to walk them to
+ * know where the script continues — including a `step_sleep` whose duration byte
+ * happens to be `step_end`, which is exactly the byte that would cut the scan
+ * short if the sleep's operand were not skipped. */
+static void test_applyonemovement_inline(void) {
+    uint8_t code[8];
+    int n = 0;
+    n = b(code, n, PCS_APPLYONEMOVEMENT);
+    n = b(code, n, 1);                     /* person 1 */
+    n = b(code, n, PCM_STEP_UP);           /* the step, at offset 2 */
+    n = b(code, n, PCM_STEP_SLEEP);
+    n = b(code, n, PCM_STEP_END);          /* the duration, not the end */
+    n = b(code, n, PCM_STEP_END);          /* the real one */
+    n = b(code, n, PCS_END);
+
+    ScrVm vm;
+    ScrOut out;
+    scr_vm_start(&vm, code, (uint16_t)n, 0, NULL, 0);
+    ScrRun r = scr_vm_next(&vm, &out);
+    CHECK(r == SCR_RUN_EVENT && out.kind == SCR_EV_MOVE, "it asks for a movement");
+    CHECK(out.a == 2, "the offset is the first step byte");
+    CHECK(out.b == 1, "the person is the one the script named");
+    r = scr_vm_next(&vm, &out);
+    CHECK(r == SCR_RUN_END, "and the script continues after the movement");
+}
+
+/* The teacher's first script, moved through by hand: the movement it applies is
+ * the label the extractor kept in the same blob, and the teacher is object 3. */
+static void test_real_movement(void) {
+    const PcScriptMap *map = map_by_name("NewBarkTown");
+    if (!map) {
+        return;
+    }
+    uint16_t at = label_offset(map, "NewBarkTown_TeacherStopsYouTrigger1");
+    uint16_t runs = label_offset(map, "Movement_TeacherRunsToYou1_NBT");
+    uint16_t back = label_offset(map, "Movement_TeacherBringsYouBack1_NBT");
+    CHECK(at != SCR_TEXT_NONE, "the trigger label exists");
+    CHECK(runs != SCR_TEXT_NONE && runs < map->len,
+          "its movement is an offset into the same blob");
+    CHECK(back != SCR_TEXT_NONE && back < map->len,
+          "so is the way back");
+    if (runs == SCR_TEXT_NONE || back == SCR_TEXT_NONE) {
+        return;
+    }
+    CHECK(map->bytes[runs] == PCM_STEP_LEFT, "Movement_TeacherRunsToYou1 starts left");
+    CHECK(map->bytes[back] == PCM_STEP_RIGHT, "Movement_TeacherBringsYouBack1 starts right");
+
+    ScrVm vm;
+    ScrOut out;
+    scr_vm_start(&vm, map->bytes, map->len, at, NULL, 0);
+    int seen_runs = 0, seen_back = 0, seen_follow = 0, seen_stop = 0;
+    for (int guard = 0; guard < 32; guard++) {
+        ScrRun r = scr_vm_next(&vm, &out);
+        if (r != SCR_RUN_EVENT) break;
+        if (out.kind == SCR_EV_MOVE && out.a == runs) {
+            CHECK(out.b == 3, "the teacher is object 3");
+            seen_runs++;
+        } else if (out.kind == SCR_EV_MOVE && out.a == back) {
+            CHECK(out.b == 3, "still the teacher");
+            seen_back++;
+        } else if (out.kind == SCR_EV_FOLLOW) {
+            CHECK(out.a == 3 && out.b == 0, "follow: teacher leads, the player follows");
+            seen_follow++;
+        } else if (out.kind == SCR_EV_STOPFOLLOW) {
+            seen_stop++;
+        } else if (out.kind == SCR_EV_UNSUPPORTED) {
+            break;                     /* `special RestartMapMusic`, not ported */
+        }
+    }
+    CHECK(seen_runs == 1, "the cutscene runs the teacher to the player once");
+    CHECK(seen_back == 1, "and brings him back once");
+    CHECK(seen_follow == 1, "with the player following in between");
+    CHECK(seen_stop == 1, "and stops following before the last text");
+}
+
 /* `jumptext` is a jump, not a call: the script is over after its text, and the
  * bytes that follow are text, not code (here: an opcode that would be
  * unsupported, which proves it was never read). */
@@ -342,6 +418,8 @@ int main(void) {
     test_real_giveitem();
     test_jumptext_ends();
     test_object_scripts();
+    test_applyonemovement_inline();
+    test_real_movement();
     if (failures) {
         printf("script/vm: %d failure(s)\n", failures);
         return 1;

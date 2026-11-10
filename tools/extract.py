@@ -459,13 +459,14 @@ ANIM = {
 }
 
 
-def map_objects(pc, map_name):
-    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, script).
+def map_objects(pc, map_name, consts):
+    """object_event rows -> (x, y, SPRITE_NAME, facing, anim, move, script).
 
     Coordinates are in 16x16 px tiles (the same grid the player walks on), not
     in 32px map blocks — an object_event y of 15 on a 9-block-tall map only fits
-    that way. The movement type (`SPRITEMOVEDATA_*`) decides both the facing the
-    NPC stands with and whether it animates in place.
+    that way. The movement type (`SPRITEMOVEDATA_*`) decides the facing the
+    NPC stands with, whether it animates in place, and how it walks on its own:
+    `move` is the original's number, which ow/move reads for the patterns.
 
     `script` is how the object answers to A, in the original's two shapes:
     (`label`, name) is an OBJECTTYPE_SCRIPT, a label of this same file, and
@@ -495,8 +496,10 @@ def map_objects(pc, map_name):
             print("object   %-18s %s not ported" % (map_name, kind))
         else:
             die("%s: unknown object type %r" % (map_name, kind))
+        if a[3] not in consts:
+            die("%s: %r is not a SPRITEMOVEDATA_* constant" % (map_name, a[3]))
         out.append((int(a[0]), int(a[1]), a[2], FACING.get(a[3], 0),
-                    ANIM.get(a[3], 0), spec))
+                    ANIM.get(a[3], 0), consts[a[3]], spec))
     return out
 
 
@@ -1495,6 +1498,49 @@ def emit_text(path, texts, pc):
         f.write("};\n\n#endif\n")
 
 
+def movement_defs(pc):
+    """macros/scripts/movement.asm -> ({const name: byte}, {macro: [bytes]}).
+
+    A movement step is one byte and `step_sleep` is two (the step plus how long
+    to wait). Nothing is counted or retyped here: every macro body reads
+    `db movement_x ; $hh`, so the comment is the value, and a `db \\1` line is
+    the macro's own argument (the duration of `step_sleep`).
+    """
+    consts, macros = {}, {}
+    txt = read(os.path.join(pc, "macros/scripts/movement.asm")).splitlines()
+    i = 0
+    while i < len(txt):
+        m = re.match(r"\s*MACRO\s+(\w+)\s*$", txt[i])
+        if not m:
+            i += 1
+            continue
+        name = m.group(1)
+        i += 1
+        steps = []
+        while i < len(txt) and txt[i].strip() != "ENDM":
+            line = txt[i]
+            i += 1
+            m = re.match(r"\s*db\s+(\w+)\s*;\s*\$([0-9a-fA-F]+)\s*$", line)
+            if m:
+                consts[m.group(1)] = int(m.group(2), 16)
+                steps.append(consts[m.group(1)])
+                continue
+            m = re.match(r"\s*db\s+\\(\d)\s*(?:;.*)?$", line)
+            if m:
+                steps.append(("arg", int(m.group(1))))
+                continue
+            s = line.split(";")[0].strip()
+            if not s:
+                continue
+            die("movement macro %s: cannot assemble %r" % (name, s))
+        i += 1
+        macros[name] = steps
+    if len(macros) < 50 or len(consts) < 50:
+        die("macros/scripts/movement.asm: only %d macros, %d constants found"
+            % (len(macros), len(consts)))
+    return consts, macros
+
+
 def script_defs(pc):
     """Everything the map scripts need that lives outside a map file.
 
@@ -1536,11 +1582,8 @@ def script_defs(pc):
     if len(opcodes) < 200:
         die("events.asm: only %d script opcodes found" % len(opcodes))
 
-    movement = set()
-    for line in read(os.path.join(pc, "macros/scripts/movement.asm")).splitlines():
-        m = re.match(r"MACRO\s+(\w+)", line.strip())
-        if m:
-            movement.add(m.group(1))
+    mconsts, mmacros = movement_defs(pc)
+    movement = set(mmacros)
 
     # Text macros end a script block: the strings sit right after `end` in the
     # same label, and map_texts has already extracted them.
@@ -1582,6 +1625,11 @@ def script_defs(pc):
                 consts.setdefault(m.group(1), int(v[1:], 16) if v[0] == "$" else int(v))
     if len(consts) < 1000:
         die("constants: only %d values found" % len(consts))
+    # The movement steps are `const movement_*` in macros/scripts/movement.asm
+    # itself, not under constants/, and a script can name one:
+    # `applyonemovement PLAYER, step_up` emits `db movement_step_up`.
+    for name, code in mconsts.items():
+        consts.setdefault(name, code)
 
     group, order = -1, 0
     for line in read(os.path.join(pc, "constants/map_constants.asm")).splitlines():
@@ -1596,7 +1644,8 @@ def script_defs(pc):
             consts["MAP_" + m.group(1)] = order
             order += 1
     return {"opcodes": opcodes, "macros": macros, "movement": movement,
-            "text": text_macros, "specials": specials, "consts": consts}
+            "mmacros": mmacros, "text": text_macros, "specials": specials,
+            "consts": consts}
 
 
 def asm_label_blocks(txt):
@@ -1790,8 +1839,57 @@ def const_expr(expr, consts):
         return None
 
 
+def map_movements(pc, map_name, defs):
+    """All movement data of a map file as one region: (bytes, {label: offset}).
+
+    The blocks are fallthrough data — `Movement_A:` can run straight into
+    `Movement_B:` — so they have to stay contiguous and in file order, and a
+    label is an offset into the one region, exactly like a script label is an
+    offset into the script blob. Every stream has to reach a `step_end` inside
+    the region: a movement that ran off the end would read script bytes as steps.
+    """
+    steps, at = [], {}
+    for label, body in asm_label_blocks(map_source(pc, map_name).splitlines()):
+        lines = [l.split(";")[0].strip() for l in body]
+        lines = [l for l in lines if l]
+        if not lines or lines[0].split()[0] not in defs["mmacros"]:
+            continue
+        if label in at:
+            die("%s: movement label %s appears twice" % (map_name, label))
+        at[label] = len(steps)
+        for line in lines:
+            parts = line.split(None, 1)
+            macro = parts[0]
+            if macro not in defs["mmacros"]:
+                die("%s.%s: %r is not a movement step" % (map_name, label, line))
+            args = split_args(parts[1]) if len(parts) > 1 else []
+            for b in defs["mmacros"][macro]:
+                if not isinstance(b, tuple):
+                    steps.append(b)
+                    continue
+                k = b[1] - 1
+                if k >= len(args):
+                    die("%s.%s: %s needs %d argument(s)"
+                        % (map_name, label, macro, k + 1))
+                v = _number(args[k], defs)
+                if not 0 <= v <= 255:
+                    die("%s.%s: %s duration %d does not fit in a byte"
+                        % (map_name, label, macro, v))
+                steps.append(v)
+    end = defs["consts"]["movement_step_end"]
+    sleep = defs["consts"]["movement_step_sleep"]
+    for label, start in at.items():
+        i = start
+        while i < len(steps) and steps[i] != end:
+            i += 2 if steps[i] == sleep else 1
+        if i >= len(steps):
+            die("%s.%s: the movement never reaches step_end" % (map_name, label))
+    return steps, at
+
+
 def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
-                std_blocks=None, scenes=(), coords=(), scene_consts=None):
+                std_blocks=None, scenes=(), coords=(), scene_consts=None,
+                movements=None):
     """Assemble every script label of a map into one blob.
 
     Each entry point gets its own region, so a script can be run from its
@@ -1819,6 +1917,10 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
     `scenes` are the map's scene names (see map_scenes) and `coords` its coord
     events (see map_coord_events): the names become the constants `setscene`
     takes, and each coord event's script is one more offset of this blob.
+
+    `movements` is (bytes, {label: offset}) from map_movements: the region goes
+    in right after the scripts, so `applymovement` can point at it by offset and
+    the port never needs a second table (see docs/06 on what that costs).
     """
     stats = {"event": -1, "flag": -1}
     blocks = list(asm_label_blocks(map_source(pc, map_name).splitlines()))
@@ -1986,6 +2088,11 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
     for label, _ in scripts:
         labels[label] = off
         off += sizes[label]
+    # Movement data starts where the scripts end; its labels are offsets into
+    # this same blob, which is what an `applymovement` operand becomes.
+    mov_bytes, mov_at = movements or ([], {})
+    for label, here in mov_at.items():
+        labels.setdefault(label, off + here)
 
     blob, extern = [], set()
     for label, body in scripts:
@@ -1995,6 +2102,7 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
                 % (map_name, label, len(data), sizes[label]))
         blob += data
         extern |= ext
+    blob += list(mov_bytes)
 
     # The objects last, so every label offset above keeps its value: an object's
     # script is a one-command region appended after the last script.
@@ -2084,7 +2192,33 @@ def map_scripts(pc, map_name, defs, text_index, obj_specs=(), bg_events=(),
             "objects": obj_offsets, "bg": bg_offsets, "bg_flags": bg_flags,
             "bg_events": bg_events, "coords": coord_offsets,
             "coord_events": coords, "scene_count": len(scenes), "stats": stats,
+            "movements": len(mov_at), "movement_bytes": len(mov_bytes),
             "locals": sum(len(v) for v in locals_rel.values())}
+
+
+def emit_move(path, consts):
+    """The movement step numbers as C names, in their own small header.
+
+    ow/move.c has to name the step bytes, and it must not include gen/scripts.h:
+    that header carries the blobs, and naming them from a second translation unit
+    makes the linker keep a full copy of each one (see docs/06). A header of
+    #defines costs nothing until it is used.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("/* generated by tools/extract.py from Polished Crystal — do not edit */\n")
+        f.write("#ifndef PC_GEN_MOVE_H\n#define PC_GEN_MOVE_H\n\n")
+        f.write("/* movement steps: the `const movement_*` values of\n"
+                " * macros/scripts/movement.asm, one byte each (step_sleep two) */\n")
+        for name in sorted(consts):
+            if name.startswith("movement_"):
+                f.write("#define PCM_%-28s 0x%02x\n"
+                        % (name[len("movement_"):].upper(), consts[name]))
+        f.write("\n/* the movement types of an object_event (constants/map_object_constants.asm) */\n")
+        for name in sorted(consts):
+            if name.startswith("SPRITEMOVEDATA_"):
+                f.write("#define PC_%s %d\n" % (name, consts[name]))
+        f.write("\n#endif\n")
 
 
 def emit_scripts(path, per_map, defs, text_index, consts):
@@ -2351,6 +2485,7 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
                 "    uint8_t sprite;\n"
                 "    uint8_t dir;\n"
                 "    uint8_t anim;\n"
+                "    uint8_t move;              /* SPRITEMOVEDATA_*, the original's number */\n"
                 "    int16_t text;              /* index into pc_texts, -1 = none */\n"
                 "    uint16_t script;           /* offset in the map's script blob, $ffff = none */\n"
                 "} PcObject;\n\n")
@@ -2381,10 +2516,10 @@ def emit_world(path, maps, tilesets, sprites, player, pals, pals_indoor):
             if m["objects"]:
                 f.write("static const PcObject obj_%s[%d] = {\n"
                         % (ident, len(m["objects"])))
-                for (tx, ty, si, direction, anim, script), text in zip(m["objects"],
-                                                                      m["obj_text"]):
-                    f.write("\t{%4d,%4d,%2d,%d,%d,%3d,%s},  /* tile %d,%d */\n"
-                            % (tx * 16, ty * 16, si, direction, anim, text,
+                for (tx, ty, si, direction, anim, move, script), text in zip(
+                        m["objects"], m["obj_text"]):
+                    f.write("\t{%4d,%4d,%2d,%d,%d,%2d,%3d,%s},  /* tile %d,%d */\n"
+                            % (tx * 16, ty * 16, si, direction, anim, move, text,
                                "%5d" % script if script != 0xffff else "0xffff",
                                tx, ty))
                 f.write("};\n")
@@ -2469,6 +2604,14 @@ def main():
         for i, sn in enumerate(map_scenes(pc, name)):
             if sn is not None:
                 scene_consts[sn] = i
+    # Movement data lives inside the map's own blob (it is fallthrough data, not
+    # a table of pointers), so a script may only apply movement defined in the
+    # same file. Mapping label -> map lets a cross-file reference fail here
+    # instead of becoming a $ffff the game would report at run time.
+    movement_owner = {}
+    for name in wanted:
+        for label, _ in map_movements(pc, name, defs)[1].items():
+            movement_owner.setdefault(label, name)
 
     for map_name in wanted:
         w, h = map_dims(pc, map_name)
@@ -2507,8 +2650,8 @@ def main():
         objects = []
         obj_text = []
         obj_specs = []
-        for (bx, by, spr, direction, anim, spec), found in zip(map_objects(pc, map_name),
-                                                              obj_labels):
+        for (bx, by, spr, direction, anim, move, spec), found in zip(
+                map_objects(pc, map_name, defs["consts"]), obj_labels):
             obj_specs.append(spec)
             name = spr[len("SPRITE_"):].lower()
             idx = next((i for i, (n, _) in enumerate(sprites) if n == name), -1)
@@ -2518,7 +2661,7 @@ def main():
                     continue
                 idx = len(sprites)
                 sprites.append((name, frames))
-            objects.append((bx, by, idx, direction, anim))
+            objects.append((bx, by, idx, direction, anim, move))
             if found is None:
                 obj_text.append(-1)
             else:
@@ -2605,13 +2748,20 @@ def main():
         # is an extraction error, not a trigger that silently never happens.
         scenes = map_scenes(pc, map_name)
         coords = map_coord_events(pc, map_name, scenes, w * 2, h * 2)
+        movements = map_movements(pc, map_name, defs)
         try:
             sdata = map_scripts(pc, map_name, defs, text_index, obj_specs, bg_events,
-                                std_blocks, scenes, coords, scene_consts)
+                                std_blocks, scenes, coords, scene_consts, movements)
         except Unsupported as exc:
             print("scripts   %-22s SKIPPED: %s" % (map_name, exc))
             sdata = None
         if sdata is not None:
+            for sym in sdata["extern"]:
+                owner = movement_owner.get(sym)
+                if owner and owner != map_name:
+                    die("%s: a script applies %s, but that movement data is in "
+                        "%s; movement stays in the map's own blob"
+                        % (map_name, sym, owner))
             sdata["map_index"] = map_slot[map_name]
             sdata["group"], sdata["number"] = map_ids_all[map_id(pc, map_name)]
             per_map.append((map_name, sdata))
@@ -2628,6 +2778,9 @@ def main():
                 print("scene     %-22s %2d scenes, %2d coord event(s), %d with a script"
                       % (map_name, len(scenes), len(coords),
                          sum(1 for o in sdata["coords"] if o != 0xffff)))
+            if sdata["movements"]:
+                print("movement  %-22s %2d blocks, %3d B"
+                      % (map_name, sdata["movements"], sdata["movement_bytes"]))
         scripts_for = sdata["objects"] if sdata is not None else [0xffff] * len(objects)
         objects = [o + (sc,) for o, sc in zip(objects, scripts_for)]
 
@@ -2658,6 +2811,12 @@ def main():
     emit_text(tpath, texts_all, pc)
     print("texts     %d in %s (%d KB)"
           % (len(texts_all), tpath, os.path.getsize(tpath) // 1024))
+
+    mpath = os.path.join(out, "move.h")
+    emit_move(mpath, dict(defs["consts"]))
+    print("movement  %d steps, %d types in %s"
+          % (sum(1 for n in defs["consts"] if n.startswith("movement_")),
+             sum(1 for n in defs["consts"] if n.startswith("SPRITEMOVEDATA_")), mpath))
 
     spath = os.path.join(out, "scripts.h")
     emit_scripts(spath, per_map, defs, text_index, dict(defs["consts"]))

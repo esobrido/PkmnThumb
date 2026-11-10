@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **25 hechos · 8 parciales · 60 pendientes** (el conteo incluye las tablas
+Progreso: **27 hechos · 8 parciales · 58 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -37,7 +37,7 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 | OW-03 | Colisiones | `engine/overworld/collision.asm` | ✅ (por cuadrante de 16 px) |
 | OW-04 | Cámara / scroll | `engine/overworld/player_step.asm` | ✅ |
 | OW-05 | Objetos/NPCs (posiciones) | `engine/overworld/objects.asm` | ✅ colocados, con cara y giro in place |
-| OW-06 | Movimiento de NPCs, patrones | `engine/overworld/map_objects.asm` | ⬜ |
+| OW-06 | Movimiento de NPCs, patrones | `engine/overworld/map_objects.asm` | ✅ `ow/move` interpreta los bloques `Movement_*` (STEP/TURN/WAIT/SHOW/HIDE/END, `UNSUPPORTED` para lo que falta); velocidades 8/16/32 frames; `follow`/`stopfollow`; los patrones `SPRITEMOVEDATA_*` andan solos con la espera de 16-79 frames de `RandomWalkContinue` y reintentan si la celda está ocupada |
 | OW-07 | VM de scripts | `engine/overworld/scripting.asm` | ⬜ **clave** |
 | OW-08 | Warps y conexiones entre mapas | `engine/overworld/warp.asm` | 🟡 puertas y alfombras de los 8 mapas, con fade de 10+10; faltan conexiones (andar entre mapas) y escaleras a pisos sin extraer |
 | OW-09 | Escenas y coord/bg events | `engine/events/std_scripts.asm` | ⬜ |
@@ -217,7 +217,7 @@ Objetivo: el mundo deja de ser un decorado.
 
 | Tarea | Detalle | Tam |
 |---|---|---|
-| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 508 B, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
+| SCR-01 | Extractor del bytecode de scripts de mapa | ✅ `script_defs`/`map_scripts` ensamblan los macros de `events.asm` en los 8 mapas con scripts (2 767 B tras sumar los 259 B de movimiento de SCR-06, 79 etiquetas), incluidos los que inyectan código (`giveitem`/`verbosegiveitem` con `\#` y `shift`), las tablas `scalltable` y los `if DEF(DEBUG)` del `.asm` del mapa |
 | SCR-02 | VM de scripts en C (tabla de comandos, pila, flags) | XL | 🟡 `script/vm`: control de flujo, pila de 5, flags/eventos, texto (incluidos `jumptext*`/`jumpthistext*` y sus variantes condicionales), `turnobject`/`faceplayer`/`appear`/`disappear`, sonido y `pause`; batalla, `special`, `jumpstd`, `readvar` y escenas devuelven `SCR_EV_UNSUPPORTED` y paran |
 | SCR-03 | Interacción: hablar, leer carteles, objetos del suelo | 🟡 los tres tipos de `bg_event` ejecutan su script: cartel (22 `JUMPTEXT`), estantería (`JUMPSTD`, std script copiado al blob) y objeto escondido (`BGEVENT_ITEM`, mensaje de `_FoundItemText` con el nombre del objeto). Los 2 objetos del build entran en `bag.c` y su flag los consume; 39 de 40 celdas tienen script. Queda la radio de casa de los vecinos (`READ InitialRadio`, vive en otro fichero) y que 13 de los 32 NPCs caigan al texto plano (límite de la VM: `special`, movimientos) |
 | SCR-04 | Warps, conexiones entre mapas, carga en caliente | ✅ puertas y warp carpets en los 8 mapas, y **conexiones**: `ow/connect` cruza el borde en las 4 direcciones aplicando el `offset` del original; el extractor valida que las dos orillas compartan celda andable y deja sólidos los bordes que llevan a mapas fuera del build (`-> Route27`, `-> Route30`, `-> CherrygroveBay`, `-> Route46`). Verificado andando New Bark Town → Ruta 29 → Ciudad Cerezo (dos `connect:` en el log, capturas en `artifacts/`) |
@@ -225,7 +225,7 @@ Objetivo: el mundo deja de ser un decorado.
 | SCR-04b | Comandos de texto del original en el impresor (0.9.0, cierra TXT-04) | ✅ |
 | SCR-04c | Bytecode de scripts ensamblado desde los macros (0.10.0, completo en 0.12.0) y VM que lo ejecuta (0.10.0) | 🟡 |
 | SCR-05 | Escenas y `coord_event`/`bg_event` | M | ✅ las 18 escenas de los 5 mapas que tienen tabla y los 23 `coord_event`, disparados al terminar el paso sobre su celda; `setscene`/`setmapscene`/`checkscene`/`checkmapscene` en la VM (con el 0 que `checkscene` lee como "ninguna"). Verificado andando: la maestra de New Bark Town para al jugador con `Text_WaitPlayer`; el script se detiene en `applymovement` (SCR-06) |
-| SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M |
+| SCR-06 | Movimiento de NPCs (`SPRITEMOVEDATA_*`) | M | ✅ 56 bloques de movimiento (259 B) dentro del blob de cada mapa, como offsets detrás de las etiquetas de script, con los bloques que caen por fallthrough concatenados; `applymovement`/`applymovementlasttalked`/`applyonemovement` (pasos inline hasta el `step_end`) y `follow`/`stopfollow` en la VM. Verificado: la cutscene de la maestra de New Bark Town corre entera — 4 pasos hacia el jugador, texto, 4 pasos de vuelta siguiéndola, texto — y el log acaba en `script: stopped at 0x0f` (`special RestartMapMusic`); `artifacts/scr06.png` |
 | SCR-07 | Cutscenes (mover cámara/jugador/NPC desde script) | M |
 | SCR-08 | Día/noche con RTC y cambio de paletas | M |
 
@@ -236,9 +236,10 @@ con Elm y que su script se ejecute del bytecode original.
 y las dos conexiones al oeste (New Bark Town ↔ Ruta 29, Ruta 29 ↔ Ciudad Cerezo) con el
 cruce de borde de `ow/connect`. Reproducible con la receta de `docs/05`; el log deja
 `connect: Route29` y `connect: CherrygroveCity` por el camino. Hablar con Elm ya salía de
-su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta:
-movimiento de NPCs y cutscenes son SCR-06/07; los `coord_event` ya disparan y la maestra
-para al jugador, pero su cutscene no puede seguir.
+su bytecode desde 0.13.0. Lo que la fase 2 deja abierto no está en esta puerta: los
+`coord_event` disparan y la cutscene de la maestra ya **se completa** (SCR-06); lo que
+queda es SCR-07 (mover la cámara desde script) y los `special`/`jumpstd` que aún paran la
+VM.
 
 ### Fase 3 — Sistemas de juego (datos + progresión)
 

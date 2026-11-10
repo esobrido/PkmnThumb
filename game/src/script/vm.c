@@ -9,6 +9,7 @@
  */
 #include "script/vm.h"
 
+#include "gen/move.h"
 #include "gen/scripts.h"
 #include "script/scene.h"
 
@@ -366,6 +367,64 @@ ScrRun scr_vm_next(ScrVm *vm, ScrOut *out) {
                 }
                 return event(out, SCR_EV_DELAY, frames, 0);
             }
+
+        /* --- movement --------------------------------------------------- */
+        /* Script_applymovement: person, then a pointer to movement data. The
+         * extractor keeps that data inside this same blob, so the operand is an
+         * offset the caller can hand straight to ow/move. */
+        case PCS_APPLYMOVEMENT:
+            {
+                uint8_t who = byte(vm);
+                uint16_t at2 = word(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                return event(out, SCR_EV_MOVE, at2, who);
+            }
+
+        case PCS_APPLYMOVEMENTLASTTALKED:
+            {
+                uint16_t at2 = word(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                return event(out, SCR_EV_MOVE, at2, SCR_OBJECT_LAST_TALKED);
+            }
+
+        /* Script_applyonemovement: the steps come inline in the script, up to
+         * and including `step_end`, and the script carries on after them — so
+         * the VM has to walk them to know where the movement stops. A
+         * `step_sleep` carries its own byte, which could be $47 by chance. */
+        case PCS_APPLYONEMOVEMENT:
+            {
+                uint8_t who = byte(vm);
+                uint16_t start = vm->pos;
+                while (!vm->dead && vm->pos < vm->len) {
+                    uint8_t step = vm->code[vm->pos++];
+                    if (step == PCM_STEP_END) break;
+                    if (step == PCM_STEP_SLEEP) vm->pos++;
+                }
+                if (vm->dead || vm->pos > vm->len) {
+                    vm->dead = 1;
+                    return SCR_RUN_ERROR;
+                }
+                return event(out, SCR_EV_MOVE, start, who);
+            }
+
+        /* Script_follow: the second argument is the follower, the first the one
+         * it copies. `stopfollow` ends it for everyone, as in the original. */
+        case PCS_FOLLOW:
+            {
+                uint8_t leader = byte(vm);
+                uint8_t follower = byte(vm);
+                if (vm->dead) {
+                    return SCR_RUN_ERROR;
+                }
+                return event(out, SCR_EV_FOLLOW, leader, follower);
+            }
+
+        case PCS_STOPFOLLOW:
+            return event(out, SCR_EV_STOPFOLLOW, 0, 0);
 
         case PCS_SETLASTTALKED:    /* Script_setlasttalked: nothing to store */
             (void)byte(vm);

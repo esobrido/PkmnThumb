@@ -15,7 +15,8 @@
  *   ow/map     map geometry + collision      tests/unit/test_ow_map.c
  *   ow/camera  the scrolling window          tests/unit/test_ow_camera.c
  *   ow/player  the walking state machine     tests/unit/test_ow_player.c
- *   ow/actor   NPC facing, spin, Y-sort      tests/unit/test_ow_actor.c
+ *   ow/actor   NPC facing, walk, spin, Y-sort tests/unit/test_ow_actor.c
+ *   ow/move    movement streams and walking patterns tests/unit/test_ow_move.c
  *   ow/render  the banded raster             tests/unit/test_ow_render.c
  *   ow/connect walking between two maps      tests/unit/test_ow_connect.c
  *   gfx_sprite 2bpp expansion and blitting   tests/unit/test_gfx_sprite.c
@@ -40,6 +41,7 @@
 #include "ow/camera.h"
 #include "ow/player.h"
 #include "ow/actor.h"
+#include "ow/move.h"
 #include "ow/render.h"
 #include "ow/warp.h"
 #include "ow/connect.h"
@@ -60,7 +62,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.15.0");
+MOTE_GAME_VERSION("0.16.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -132,6 +134,18 @@ static OwPlayer player;
 static OwCamera cam;
 static OwActor actors[OW_MAX_ACTORS];
 static int actor_count;
+/* How each NPC moves when no script is driving it, and the scripted movement in
+ * progress. `move_wait` is the object a running script is waiting on: -1 nobody,
+ * MOVER_PLAYER the player, else the actor index. Only one scripted movement runs
+ * at a time, because the VM does not advance until it ends. */
+static OwMove movers[OW_MAX_ACTORS];        /* applymovement, per NPC */
+static OwWander wanders[OW_MAX_ACTORS];     /* SPRITEMOVEDATA_WALK_*, per NPC */
+static int follow_of[OW_MAX_ACTORS];        /* leader actor index, or -1 */
+static OwMove player_move;                  /* applymovement PLAYER */
+static int moving_player;                   /* the player's step came from a script */
+static int player_follower_of = -1;         /* `follow X, PLAYER` */
+static int move_wait = -1;
+static int move_timer;                      /* frames left of a step_sleep */
 static OwWarp warp;                       /* the door transition in progress */
 
 /* ------------------------------------------------------------------- engine */
@@ -221,6 +235,18 @@ static void load_map_tables(int index) {
     map_scene.map_count = PC_SCENE_MAP_COUNT;
     script_active = 0;              /* walking into a door abandons a script */
     script_object = -1;
+    /* Scripted movement does not survive a map change: the blob it points into
+     * is the one being replaced. */
+    ow_move_reset(&player_move);
+    moving_player = 0;
+    player_follower_of = -1;
+    move_wait = -1;
+    move_timer = 0;
+    for (int i = 0; i < OW_MAX_ACTORS; i++) {
+        ow_move_reset(&movers[i]);
+        ow_wander_init(&wanders[i]);
+        follow_of[i] = -1;
+    }
 
     const PcMapDef *d = &pc_maps[index];
     tileset = &pc_tilesets[d->tileset];
@@ -424,6 +450,165 @@ static void script_fallback(unsigned opcode) {
     }
 }
 
+/* ---- scripted movement ---------------------------------------------------
+ * `applymovement` hands the VM's caller a stream of steps, and the script does
+ * not advance until the last `step_end`: the GB waits the same way (wScriptMode
+ * stays in SCRIPT_READ_COMMANDS and the object's step function drives the walk).
+ * The stream lives inside the map's own script blob, so there is nothing to
+ * load or free — only a cursor (ow/move).
+ *
+ * While a movement runs the pad does nothing: the world is frozen exactly like an
+ * open textbox, which is also what makes the recipes in docs/05 deterministic.
+ */
+#define MOVER_PLAYER (-2)
+
+/* Can an NPC step onto this cell? Its own cell is in `occupied`, but the
+ * destination is not, so this is the tiles, the other NPCs and the player. */
+static int actor_cell_blocked(int px, int py) {
+    if (px < 0 || py < 0 || (px >> 4) >= map.w * 2 || (py >> 4) >= map.h * 2)
+        return 1;
+    if (ow_px_blocked(&map, px, py)) return 1;
+    return player.px == px && player.py == py;
+}
+
+/* The log line is the only way to see an unsupported step from the outside. */
+static void move_log_opcode(unsigned opcode) {
+    char line[40], *w = line;
+    for (const char *s = "move: stopped at "; *s; s++) *w++ = *s;
+    for (const char *s = "0x"; *s; s++) *w++ = *s;
+    const char *hex = "0123456789abcdef";
+    *w++ = hex[(opcode >> 4) & 15];
+    *w++ = hex[opcode & 15];
+    *w = 0;
+    mote->log(line);
+}
+
+/* `follow leader, follower`: the follower walks into the cell the leader has just
+ * left, once the leader lands there. Blocked means it lags a step behind, which
+ * is what the original's FOLLOWNOTEXACT does when it cannot keep up. */
+static void follow_arrivals(int leader) {
+    int dir = actors[leader].dir;
+    int dx = dir_dx(dir) * OW_STEP_PX, dy = dir_dy(dir) * OW_STEP_PX;
+    for (int i = 0; i < actor_count; i++) {
+        if (follow_of[i] != leader || actors[i].step_left) continue;
+        if (actor_cell_blocked(actors[i].px + dx, actors[i].py + dy)) continue;
+        ow_actor_start_step(&actors[i], dir, OW_STEP_NORMAL);
+    }
+    if (player_follower_of == leader && !player.step_left &&
+            !ow_px_blocked(&map, player.px + dx, player.py + dy)) {
+        player.dir = dir;
+        ow_player_try_step(&player, &map, dir);
+    }
+}
+
+/* Which object a script means: 0 is the player in the original's numbering, and
+ * the object ids of object_const_def count from 1, so actor N is object N + 1. */
+static int object_actor(int obj) {
+    if (obj == 0) return MOVER_PLAYER;
+    if (obj == SCR_OBJECT_LAST_TALKED) return script_object;
+    return obj - 1;
+}
+
+/* Start a movement stream for `obj` and park the script on it. */
+static void script_move_start(int obj, uint16_t offset) {
+    if (!map_scripts || offset >= map_scripts->len) {
+        script_fallback(0xfffd);        /* offset outside the map's bytecode */
+        return;
+    }
+    int who = object_actor(obj);
+    if (who != MOVER_PLAYER && (who < 0 || who >= actor_count)) {
+        script_fallback(0xfffc);        /* no such object on this map */
+        return;
+    }
+    if (who == MOVER_PLAYER) {
+        ow_move_start(&player_move, map_scripts->bytes + offset,
+                      (uint16_t)(map_scripts->len - offset));
+    } else {
+        ow_move_start(&movers[who], map_scripts->bytes + offset,
+                      (uint16_t)(map_scripts->len - offset));
+    }
+    move_wait = who;
+    move_timer = 0;
+}
+
+/* Do one frame of the movement the script is waiting for. Returns 1 when it is
+ * over, so the caller can let the script run on. */
+static int movement_step(int adv) {
+    if (adv < 1) adv = 1;
+
+    /* A walk already under way finishes first, whichever object owns it: the
+     * player may still be following the NPC the stream is moving. */
+    if (player.step_left) {
+        ow_player_update(&player, &map, OW_DIR_NONE, adv, 0,
+                         options_turn_frames(&options));
+        if (player.step_left) return 0;
+        moving_player = 0;
+        mark_actors();
+    }
+    if (move_wait != MOVER_PLAYER) {
+        OwActor *a = &actors[move_wait];
+        if (a->step_left) {
+            ow_actor_update(a, 1);
+            if (a->step_left) return 0;
+            mark_actors();
+            follow_arrivals(move_wait);
+        }
+    }
+
+    if (move_timer > 0) {
+        move_timer -= adv;
+        return 0;
+    }
+
+    OwMove *m = move_wait == MOVER_PLAYER ? &player_move : &movers[move_wait];
+    OwActor *a = move_wait == MOVER_PLAYER ? 0 : &actors[move_wait];
+    OwMoveOut out;
+    for (;;) {
+        switch (ow_move_next(m, &out)) {
+        case OW_MOVE_END:
+            return player.step_left ? 0 : 1;
+        case OW_MOVE_TURN:
+            if (a) ow_actor_face(a, out.dir);
+            else player.dir = out.dir;
+            break;
+        case OW_MOVE_SHOW:
+            /* show_object/hide_object: the port has no sprite visibility yet, and
+             * a scene that needs it (Lyra's entrance) is SCR-07. */
+            break;
+        case OW_MOVE_WAIT:
+            move_timer = out.frames ? out.frames : 1;
+            return 0;
+        case OW_MOVE_STEP: {
+            int dx = dir_dx(out.dir) * OW_STEP_PX;
+            int dy = dir_dy(out.dir) * OW_STEP_PX;
+            if (!a) {
+                player.dir = out.dir;
+                if (!ow_player_try_step(&player, &map, out.dir)) {
+                    ow_move_stop(m);        /* blocked: the movement is over */
+                    return 1;
+                }
+                moving_player = 1;
+                return 0;
+            }
+            if (actor_cell_blocked(a->px + dx, a->py + dy)) {
+                ow_move_stop(m);
+                return 1;
+            }
+            ow_actor_start_step(a, out.dir, out.frames);
+            mark_actors();
+            return 0;
+        }
+        case OW_MOVE_UNSUPPORTED:
+            move_log_opcode(out.opcode);
+            ow_move_stop(m);
+            return 1;
+        default:
+            ow_move_stop(m);
+            return 1;
+        }
+    }
+}
+
 /* One request: do it here and return, or run on to the next one. */
 static void script_run(void) {
     for (int guard = 0; guard < 256 && script_active; guard++) {
@@ -461,6 +646,22 @@ static void script_run(void) {
             }
             break;
         }
+        case SCR_EV_MOVE:
+            script_move_start(out.b, out.a);
+            return;                    /* the script waits for the last step */
+        case SCR_EV_FOLLOW: {
+            /* out.a is the leader, out.b the follower (Script_follow). */
+            int leader = object_actor(out.a);
+            int follower = object_actor(out.b);
+            if (leader == MOVER_PLAYER) break;      /* the player leads: no follower */
+            if (follower == MOVER_PLAYER) player_follower_of = leader;
+            else if (follower >= 0 && follower < actor_count) follow_of[follower] = leader;
+            break;
+        }
+        case SCR_EV_STOPFOLLOW:
+            for (int i = 0; i < OW_MAX_ACTORS; i++) follow_of[i] = -1;
+            player_follower_of = -1;
+            break;
         case SCR_EV_TEXT_OPEN:
         case SCR_EV_TEXT_CLOSE:
         case SCR_EV_SOUND:             /* no audio yet (TXT-10) */
@@ -546,6 +747,24 @@ static void g_update(float dt) {
         if (mote_just_pressed(in, MOTE_BTN_A)) textbox_advance(&textbox);
         /* The box closing is the script's cue to carry on from the showtext. */
         if (!textbox_is_open(&textbox) && script_active) script_run();
+        if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
+        return;
+    }
+
+    /* A movement a script is waiting for freezes the world like an open textbox:
+     * the pad walks nobody, a follower steps when its leader lands, and the
+     * script resumes on the frame the movement ends. */
+    if (script_active && move_wait != -1) {
+        walk_acc += dt * 60.0f;
+        int adv = (int)walk_acc;
+        walk_acc -= (float)adv;
+        if (movement_step(adv)) {
+            move_wait = -1;
+            move_timer = 0;
+            script_run();
+        }
+        ow_camera_follow(&cam, &map, player.px, player.py, SCREEN);
+        for (int i = 0; i < actor_count; i++) ow_actor_update(&actors[i], 1);
         if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
         return;
     }
@@ -637,8 +856,26 @@ static void g_update(float dt) {
     }
 
     /* Actors animate per frame, not per pixel walked: a spinner keeps turning
-     * while the player stands still, exactly like OBJECT_ACTION_SPIN. */
-    for (int i = 0; i < actor_count; i++) ow_actor_update(&actors[i], 1);
+     * while the player stands still, exactly like OBJECT_ACTION_SPIN. An NPC with
+     * a walking pattern takes one step when its own timer says so, and waits
+     * again if the cell is taken — the original's RandomWalkContinue. */
+    for (int i = 0; i < actor_count; i++) {
+        int was_walking = ow_actor_walking(&actors[i]);
+        ow_actor_update(&actors[i], 1);
+        /* An NPC that lands moves its blocking cell: rebuild the grid on every
+         * arrival, or its old cell stays occupied and it can never walk back
+         * into it (nor can anyone else use it). */
+        if (was_walking && !ow_actor_walking(&actors[i])) mark_actors();
+        if (actors[i].step_left || ow_move_running(&movers[i])) continue;
+        int d = ow_wander_next(&wanders[i], &actors[i],
+                               pc_maps[map_index].objects[i].move);
+        if (d == OW_DIR_NONE) continue;
+        int nx = actors[i].px + dir_dx(d) * OW_STEP_PX;
+        int ny = actors[i].py + dir_dy(d) * OW_STEP_PX;
+        if (actor_cell_blocked(nx, ny)) continue;
+        ow_actor_start_step(&actors[i], d, OW_STEP_NORMAL);
+        mark_actors();
+    }
 
     /* One perf line per second: fps, update, raster, flush, core0%, core1%. */
     if (++perf_timer >= 60) {

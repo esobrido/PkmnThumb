@@ -232,8 +232,9 @@ el del propio juego ensamblado desde sus macros. No hay traducción de scripts a
 `showtext Text_WaitPlayer` del `.asm` es un `$bc` con el índice de ese texto, el motor
 hace lo mismo que `Script_showtext`, y un macro que toma código como argumento
 (`giveitem ITEM, iffalse_endtext`) produce dos comandos seguidos, no uno. Los ocho mapas
-del arranque suman 2 508 B de bytecode, 79 etiquetas, 32 scripts de objeto, 40 celdas
-`bg_event` (39 con script), 18 escenas en 5 mapas y 23 `coord_event`.
+del arranque suman 2 767 B de bytecode (2 508 de código y 259 de bloques de movimiento),
+79 etiquetas de script, 32 scripts de objeto, 40 celdas `bg_event` (39 con script),
+18 escenas en 5 mapas y 23 `coord_event`.
 
 Tres decisiones de forma:
 
@@ -418,10 +419,47 @@ script corriendo. Es el orden del original: `CheckCurrentMapCoordEvents` se llam
 porque la pantalla ya se está fundiendo.
 
 Verificado andando: la maestra de New Bark Town para al jugador en (1,9) con
-`Text_WaitPlayer` en pantalla (`artifacts/scene_teacher.png`), y el script se detiene en
-`applymovement` porque mover NPCs es SCR-06 — la escena no avanza y el texto vuelve a
-salir si se pisa la celda otra vez, que es exactamente lo que hace el original cuando el
-movimiento no puede ejecutarse.
+`Text_WaitPlayer` en pantalla (`artifacts/scene_teacher.png`), y desde 0.16.0 la escena
+sigue: corre hacia el jugador, habla, lo arrastra cuatro celdas y él la sigue (ver
+movimiento, abajo).
+
+## Movimiento de NPCs: `applymovement`, `follow` y el paseo
+
+`ow/move.c` es puro y **no toca píxeles**: el intérprete recorre los bytes del bloque y
+dice qué toca hacer en cada frame (`OwMoveOut`: STEP, TURN, WAIT, SHOW, HIDE, END,
+UNSUPPORTED). `game.c` es quien aplica la colisión, arranca el paso del actor y avanza el
+frame: así el mismo intérprete sirve para un NPC y para el jugador, y se puede probar sin
+mapa, sin Mote y sin framebuffer.
+
+```c
+void ow_move_start(OwMove *m, const uint8_t *code, int actor)  // applymovement
+int  ow_move_running(const OwMove *m)
+OwMoveOut ow_move_next(OwMove *m, OwActor *a)                  // un frame
+void ow_move_stop(OwMove *m)
+```
+
+- **Un paso no se termina hasta que el actor llega.** El intérprete no devuelve el
+  siguiente comando mientras `ow_actor_walking(a)`: es el `step_end` del original.
+- **Un solo movimiento scriptado a la vez** por actor, y mientras dura el script el pad no
+  anda (el mundo queda congelado como con un textbox). El paso del jugador sale del mismo
+  intérprete con `MOVER_PLAYER`, no de una copia aparte.
+- Velocidades `OW_STEP_FAST/NORMAL/SLOW` = 8/16/32 frames por celda; el original las elige
+  con `step_sleep` y con las variantes `slow_*`/`fast_*` de cada paso.
+- **`follow`/`stopfollow`**: el seguidor entra en la celda que el líder acaba de dejar, en
+  el frame en que el líder termina su paso (`follow_arrivals`). El seguidor puede ser otro
+  NPC o el jugador, que es como la maestra lo devuelve a la carretera.
+- **Paseo autónomo**: `ow_wander_next` implementa `RandomWalkContinue` — una dirección
+  aleatoria por paso (arriba/abajo o izquierda/derecha según el patrón), una espera de
+  16-79 frames armada en cada decisión, y si la celda está ocupada no anda y lo vuelve a
+  intentar cuando toque. La capa de celdas ocupadas (`mark_actors`) se rehace **en cada
+  llegada**, no sólo al arrancar el paso: si no, el NPC bloquea su celda de origen para
+  siempre y se queda clavado tras el primer paso.
+
+Verificado en el emulador con la receta de `docs/05`: la cutscene de la maestra corre
+entera — texto, cuatro pasos hacia el jugador, segundo texto, cuatro pasos de vuelta con
+el jugador siguiéndola, tercer texto — y el log termina en `script: stopped at 0x0f`, que
+es `special RestartMapMusic`, lo último del script (`artifacts/scr06.png`). Los NPCs con
+patrón se mueven solos en New Bark Town y Ciudad Cerezo.
 
 ## Geometría y viewport
 
@@ -438,18 +476,22 @@ mapas más pequeños que la pantalla, la cámara se queda en 0.
 
 | Recurso | Uso |
 |---|---|
-| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts) | ver `.mote`: **77 668 B** de código+datos |
-| RAM de módulo (`.bss`) | **3 428 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor) |
+| Flash (8 mapas + 3 tilesets + textos + fuente + menús + scripts + movimiento) | ver `.mote`: **82 196 B** de código+datos |
+| RAM de módulo (`.bss`) | **3 776 B** (capa de celdas de NPC + estado de texto/menús + el warp + 222 B de flags/eventos + la bolsa, 20 huecos + los 8 bytes de escena y su descriptor + el intérprete de movimiento, 2 actores × (`OwMove` + `OwWander` + seguidor)) |
 | Arena | ~34 KB (11 hojas de sprite + jugador expandidas a RGB565) |
 | Raster host (`perf()`), 128×128 | **~20 µs/frame** (`scripts/perf.sh 200`) |
 | Fundido de puerta, 16 384 px | **61 µs** en host (host 3 GHz; en device sería ~0,7 ms por frame durante 20 frames, estimación por reloj, sin medir) |
 
-El `.mote` de 77 668 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
+El `.mote` de 82 196 B incluye los ocho mapas (New Bark Town, Ruta 29, Ciudad Cerezo y
 los cinco interiores), sus tilesets —`johto_traditional` más `lab` y `johto_house`, que
 son casi todo el crecimiento desde los 28 512 B de la 0.7.0 (los comandos de texto y
-las puertas añaden menos de 1 KB más)—, los diálogos, la fuente y
-el menú. El presupuesto de flash no es el problema en esta fase: lo será la extracción
-en lote (458 mapas, 53 tilesets), que es CON-01/CON-02.
+las puertas añaden menos de 1 KB más)—, los diálogos, la fuente, el menú y desde 0.16.0
+los **56 bloques de movimiento**. De los 4 500 B que crece el módulo desde 0.15.0
+(77 668 → 82 196), 259 B son bytes de movimiento dentro de los blobs; el resto es el
+intérprete (`ow/move.c` mide 512 B de `.text`), lo que se añade a `ow/actor.c`, el glue de
+`game.c` y las tablas de etiquetas `Movement_*`. El presupuesto de flash no es
+el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
+CON-01/CON-02.
 
 La pasada del fundido es lo más caro que se añade al frame: recorre los 16 384 píxeles
 una vez por frame durante los 20 de la transición (`blend()` por canal, sin SIMD). Sólo

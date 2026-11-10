@@ -353,7 +353,8 @@ adelante. Siete detalles que no son evidentes:
   objeto, la party) en vez de un script: `tools/extract.py` los nombra en la salida y deja
   el objeto sin script.
 
-Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 508 B de bytecode** y 79 etiquetas en
+Cobertura actual (`gen/scripts.h`): 224 opcodes, **2 767 B de bytecode** (2 508 B de
+código más 259 B de bloques de movimiento) y 79 etiquetas de script en
 los ocho mapas del build, más **32 scripts de objeto** (de 35 `object_event`) y **39
 de 40 celdas `bg_event`**. Los dos mapas sin etiquetas de script
 (`PlayersNeighborsHouse`, `ElmsHouse`) tienen blob igualmente: solo los comandos de sus
@@ -438,6 +439,37 @@ pulsar A: es el mecanismo de "la maestra te para al salir de casa".
 En el build: **18 escenas en 5 mapas** (New Bark Town 3, Ruta 29 2, Ciudad Cerezo 3,
 laboratorio de Elm 8, casa del jugador 2) y **23 `coord_event`** (7 + 2 + 3 + 7 + 4), todos
 con script resuelto. Ninguno usa `SCENE_ALWAYS`.
+
+### Movimiento: `applymovement` y los bloques `Movement_*`
+
+`applymovement 3, Movement_TeacherRunsToYou1_NBT` no lleva los pasos dentro del script:
+lleva una **etiqueta** a un bloque de bytes del mismo `.asm`. Cada macro `step_*` emite un
+byte (`db movement_<nombre> ; $hh`) y el bloque acaba en `step_end` (`$47`); `step_sleep`
+emite dos (`$46` y los frames de espera).
+
+El port mete esos bloques **en el blob de scripts del mapa**, en una región detrás de las
+etiquetas de script, y cada `Movement_*` es un offset a esa región. Con eso no hace falta
+una tabla global de movimientos y el blob no se duplica (la duplicación de blobs que cuenta
+`docs/06` deja de ser un riesgo aquí: el movimiento vive en el mismo sitio).
+
+- **Los bloques caen por fallthrough.** `Movement_TeacherBringsYouBack2_NBT` es un solo
+  `step_right` sin `step_end`: el original sigue leyendo el bloque que viene detrás en el
+  fichero. El extractor concatena los bloques en orden de fichero y exige que **cada**
+  etiqueta llegue a `step_end`; una etiqueta repetida falla el build.
+- **El extractor falla en voz alta** si un `applymovement` nombra una etiqueta que no está
+  en el `.asm` del mapa, y si un script aplica un movimiento que pertenece a **otro** mapa
+  (el original lo permitiría por accidente; aquí sería leer fuera del blob).
+- `applyonemovement` es otro caso: los pasos van **inline en el script**, no en un bloque,
+  y la duración que lee el original sale de contar bytes hasta el `step_end`.
+- `SPRITEMOVEDATA_*` (el cuarto argumento de `object_event`) llega al mapa como número:
+  `0` quieto, `1` gira antihorario, `2` horario, `3` aleatorio, y a partir de ahí los
+  patrones de paseo (`4` arriba/abajo, `5` izquierda/derecha, `6`-`9` los demás).
+
+En el build: **56 bloques** en cuatro mapas (New Bark Town 9 bloques/45 B, Ruta 29 5/26,
+Ciudad Cerezo 13/65, laboratorio de Elm 29/123) y **2 767 B** de bytecode de scripts en
+total. Los pasos y los patrones van a un header aparte, `game/src/gen/move.h`, con **105**
+constantes `PCM_*` (un paso por byte) y **57** `PC_SPRITEMOVEDATA_*`, porque `ow/move.c`
+no puede incluir `gen/scripts.h` sin arrastrar los blobs otra vez.
 
 ### Texto que no tiene etiqueta
 
@@ -579,7 +611,7 @@ reutilizarlo: hay que re-expresarlo como notas/stream para Mote (`audio_note`,
 
 ## Lo que emite el extractor
 
-Un solo header, `game/src/gen/world.h`, con seis grupos de tablas:
+Dos headers. `game/src/gen/world.h`, con seis grupos de tablas:
 
 ```c
 bg_pal[8][4]                // paletas BG del grupo `day` (exterior)
@@ -591,6 +623,16 @@ pc_maps[PC_MAP_COUNT]       // { nombre, ancho, alto, bloques, tileset, objetos,
 PcWarp warp_<mapa>[N]       // { x, y, mapa destino, nº de warp, kind, dir }
 PcConnection conn_<mapa>[N] // { dirección, mapa destino, offset en bloques }
 ```
+
+Y `game/src/gen/move.h`, con los pasos de movimiento y los patrones de paseo:
+
+```c
+#define PCM_STEP_END 0x47            // 105 pasos: el byte que `db movement_*` emite
+#define PC_SPRITEMOVEDATA_WALK_UP_DOWN 4   // 57 patrones, el nº de object_event
+```
+
+Ese segundo header existe porque `ow/move.c` necesita los números de paso pero no puede
+nombrar `pc_script_maps` (`gen/scripts.h`): hacerlo copiaría todos los blobs a esa unidad.
 
 Las **conexiones** (`connection <dir>, <Mapa>, <MAP_ID>, <offset>` en
 `data/maps/attributes.asm`, justo detrás del `map_attributes`) son el otro modo de

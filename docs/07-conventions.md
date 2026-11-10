@@ -80,6 +80,12 @@ llamando a `mote build game` directamente.
 | `game/src/ow/map.c` | `tests/unit/test_ow_map.c` |
 | `game/src/ow/player.c` | `tests/unit/test_ow_player.c` |
 | `game/src/ow/connect.c` | `tests/unit/test_ow_connect.c` |
+| `game/src/ow/actor.c` | `tests/unit/test_ow_actor.c` |
+| `game/src/ow/camera.c` | `tests/unit/test_ow_camera.c` |
+| `game/src/ow/fade.c` | `tests/unit/test_ow_fade.c` |
+| `game/src/ow/move.c` | `tests/unit/test_ow_move.c` |
+| `game/src/ow/render.c` | `tests/unit/test_ow_render.c` |
+| `game/src/ow/warp.c` | `tests/unit/test_ow_warp.c` |
 | `game/src/text/box.c` | `tests/unit/test_text_box.c` |
 | `game/src/text/font.c` | `tests/unit/test_text_font.c` |
 | `game/src/ui/list.c` | `tests/unit/test_ui_list.c` |
@@ -93,7 +99,9 @@ llamando a `mote build game` directamente.
 
 Además, `tests/unit/test_gen_data.c` prueba **los datos generados** en sí: que cada
 índice de texto/sprite que guarda un `PcObject` apunta a algo, que cada stream empieza en
-`<START>` y acaba en `<DONE>` o `<PROMPT>`, y que los objetos caen dentro del mapa. Un
+`<START>` y acaba en `<DONE>` o `<PROMPT>`, que los objetos caen dentro del mapa, y que
+los valores de `gen/move.h` son los del `.asm` (el `step_end` en `$47`, `step_sleep` en
+`$46`, `WALK_UP_DOWN` en 4 y `WALK_LEFT_RIGHT` en 5). Un
 desplazamiento de un índice (un NPC que dice la frase de otro) falla ahí, no en el
 dispositivo.
 

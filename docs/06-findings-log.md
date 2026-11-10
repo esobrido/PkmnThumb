@@ -473,7 +473,8 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   asimetría del original y se replica tal cual.
 - **Una segunda unidad que nombre las tablas generadas duplica el blob entero.** Al
   incluir `gen/scripts.h` y tocar `pc_script_maps`, el enlazador se queda con una copia
-  completa por unidad: los 2 508 B de bytecode, todas las etiquetas con sus cadenas y las
+  completa por unidad: los 2 508 B de bytecode (2 767 B hoy, con el movimiento), todas las
+  etiquetas con sus cadenas y las
   tablas de objetos/bg/coords. El `.mote` pasó de 76 700 B a 81 588 B mientras los
   símbolos sólo crecían 817 B. La solución es que `script/scene.c` y `script/vm.c` no
   nombren nunca esa tabla: reciben un `ScrScenes` con punteros. Vuelta a 77 668 B.
@@ -486,6 +487,42 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   oeste sin más; ahora su `coord_event` para al jugador y el script se detiene en
   `applymovement` (SCR-06), así que la escena no avanza. Es el comportamiento correcto
   para lo que hay portado, pero conviene saberlo antes de escribir una receta nueva.
+
+## Trampas nuevas (fase 2: movimiento de NPCs)
+
+- **Los bloques `Movement_*` no acaban donde acaba la etiqueta.** `Movement_TeacherBringsYouBack2_NBT`
+  es un solo `step_right` sin `step_end`: el original cae al bloque siguiente del fichero.
+  Emitir un bloque por etiqueta hace que el intérprete se salga del final, así que el
+  extractor los **concatena en orden de fichero** y comprueba que cada etiqueta llega a
+  `step_end`; una etiqueta repetida falla el build.
+- **`applyonemovement` no lleva etiqueta: los pasos van dentro del script.** El intérprete
+  tiene que escanear bytes hasta el `step_end` y saltarse el argumento de `step_sleep`
+  (dos bytes), o confunde la espera con el siguiente comando. La duración que el original
+  usa para ese caso (`$47` en la maestra) es justo el `step_end`.
+- **Las etiquetas de movimiento se pagan en flash.** Los 56 bloques son 259 B, pero las
+  etiquetas con su cadena y la tabla de resolución son la mayor parte de los 4 500 B que
+  crece el módulo (77 668 → 82 196 B). La alternativa —una tabla global de movimientos—
+  sería otra unidad nombrando los blobs, que es la duplicación de `docs/06` otra vez.
+- **Mover un NPC congela el pad, no la escena.** Mientras hay movimiento scriptado la VM
+  no avanza y el jugador no anda (igual que con un textbox). Una receta de captura con
+  `applymovement` en medio tiene que meter los `A` del texto y esperar la duración de los
+  pasos; si no, el `A` llega con el texto aún abierto y no pasa nada.
+- **La capa de celdas hay que rehacerla al *llegar*, no sólo al salir.** El primer
+  paseo de NPCs andaba un paso y se quedaba clavado: `mark_actors()` se llamaba al
+  arrancar el paso (con la posición vieja), y nadie lo volvía a llamar al terminarlo, así
+  que la celda de origen quedaba marcada para siempre y el NPC no podía volver a ella
+  —además de que otro podía meterse en la suya—. El sintoma es traicionero: los logs
+  dicen que el paso se inicia y la captura no cambia, porque lo que falla no es el paso
+  sino la siguiente decisión. Los pasos scriptados ya lo hacían bien (`movement_step`
+  llama a `mark_actors()` al acabar), el paseo autónomo no.
+- **Un NPC con patrón puede no moverse nunca y estar bien.** `RandomWalkContinue` no gira
+  ni fuerza: si las dos celdas del patrón están ocupadas, reintenta cada 16-79 frames. En
+  Ciudad Cerezo el joven de (23,7) se queda pegado a las flores. Antes de sospechar del
+  temporizador, loguear el paso y mirar la colisión: los pasos reales son la prueba.
+- **`-Werror=type-limits` muerde en los `uint8_t`.** Comparar el opcode con `>= 0` en un
+  parámetro `uint8_t` es siempre cierto y el build de device lo trata como error.
+- **`MOTE_SHOT` escribe PPM con extensión `.png`.** El fichero abre sin quejarse, pero hay
+  que convertirlo con PIL antes de mirarlo o de embeberlo en la docs.
 
 ## Lo que sí funcionó como oráculo
 
@@ -502,18 +539,22 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 ## Estado al cerrar esta fase
 
 - `tools/extract.py` extrae mapa, metatiles, atributos, colisión, tiles, paletas BG
-  (incluida la `indoor`), sprites, objetos, textos, **warps, conexiones, escenas y
-  `coord_event`**, y **falla con mensaje claro** si los tamaños no cuadran, si una conexión
-  no tiene orilla andable o si un `coord_event` nombra una escena que no existe.
+  (incluida la `indoor`), sprites, objetos, textos, **warps, conexiones, escenas,
+  `coord_event` y los bloques de movimiento**, y **falla con mensaje claro** si los tamaños
+  no cuadran, si una conexión no tiene orilla andable, si un `coord_event` nombra una
+  escena que no existe o si un `applymovement` apunta fuera de su mapa.
 - `game/src/game.c` renderiza 8 mapas con paleta por tile y por entorno, mueve al jugador
   en pasos de 16 px con colisión real, panea la cámara, dibuja los NPCs, **cruza
   puertas** (fundido de 10+10 frames, carga del destino y vuelta afuera por la estera) y
-  **cruza bordes entre mapas** por las conexiones, sin fundido, y **dispara los
-  `coord_event`** al terminar un paso (la maestra de New Bark Town, el guía de Cerezo).
-- Verificado: `scripts/test.sh` (20 programas unitarios y 7 escenarios, todos en verde,
-  `test_text_box` incluidos los 24 comandos),
-  build host y de device, captura headless (`docs/img/door.png` es la secuencia
-  exterior → blanco → interior), movimiento con `MOTE_KEYS` y compilación sin warnings
-  propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).
+  **cruza bordes entre mapas** por las conexiones, sin fundido, **dispara los
+  `coord_event`** al terminar un paso (la maestra de New Bark Town, el guía de Cerezo) y
+  **mueve NPCs desde script** (`applymovement`/`applyonemovement`, `follow`/`stopfollow`,
+  paso del jugador desde el mismo intérprete) con los patrones de paseo por su cuenta.
+- Verificado: `scripts/test.sh` (21 programas unitarios y 7 escenarios, todos en verde,
+  `test_ow_move` y `test_text_box` incluidos los 24 comandos),
+  build host y de device (82 196 B, `.bss` 3 776 B), captura headless
+  (`docs/img/door.png` es la secuencia exterior → blanco → interior), la cutscene completa
+  de la maestra (`artifacts/scr06.png`), movimiento con `MOTE_KEYS` y compilación sin
+  warnings propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).
 - No verificado: nada en hardware, ni los fps en device, ni el audio (`SFX_ENTER_DOOR`
   no suena todavía: el audio es TXT-10).

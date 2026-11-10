@@ -50,6 +50,9 @@ typedef enum {
     SCR_EV_SOUND,        /* a = sound id */
     SCR_EV_DELAY,        /* a = frames */
     SCR_EV_SPRITE,       /* a = object id, b = 1 to show, 0 to hide */
+    SCR_EV_MOVE,         /* a = movement offset in the map's blob, b = object id */
+    SCR_EV_FOLLOW,       /* a = leader object id, b = follower */
+    SCR_EV_STOPFOLLOW,   /* the follower stops copying the leader */
     SCR_EV_UNSUPPORTED,  /* a = opcode; the script cannot continue */
 } ScrEvent;
 

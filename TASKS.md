@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **31 hechos · 8 parciales · 54 pendientes** (el conteo incluye las tablas
+Progreso: **32 hechos · 8 parciales · 54 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -251,7 +251,7 @@ paletas OBJ/hora real (SYS-02/SYS-05) que no bloquean ninguna puerta.
 |---|---|---|---|
 | GAM-01 | Extractor de `base_stats`, tipos, movimientos, items | L | ✅ las 290 especies (ids del original, 1..291 con el hueco de 0x100), sus dos tipos, curva de crecimiento, catch rate, experiencia base y nombres; los 255 movimientos con tipo, categoría, potencia, precisión, PP, número de `EFFECT_*` y probabilidad de efecto. Los items se quedan en GAM-04: `gen/pokemon.h` (40 KB) y `gen/moves.h` (32 KB) |
 | GAM-02 | Estructuras de Pokémon y equipo | M | ✅ `mon/mon`: `Mon` (especie, nivel, DV de 16 bits, seis stats, PS, exp, cuatro movimientos con PP, estado, mote), `mon_init`/`mon_recalc` con la fórmula de `CalcPkmnStatC` y el DV de PS derivado como en Gen 2, `mon_set_move` (PP de la tabla), `mon_name` (mote o nombre de especie); `mon/party`: seis huecos en orden, `party_add`/`party_remove` (sin agujeros)/`party_heal`/`party_alive` |
-| GAM-03 | Experiencia, niveles, subida de stats | M |
+| GAM-03 | Experiencia, niveles, subida de stats | M | ✅ `mon/level` con las cuatro curvas de `data/growth_rates.asm` (coeficientes extraídos, incluido el `c` negativo de Medium Slow) y la fórmula de `CalcExpAtLevel`, con la división entera del término cúbico antes del cuadrático; `level_from_exp` es el escaneo de `CalcLevel`; `mon_add_exp` da la experiencia (tope en el total del nivel 100), sube los niveles que toquen en un solo premio y devuelve cuántos, recalcula las stats y mueve el PS por la diferencia de máximos como `UpdatePkmnStats` (un mon desmayado no revive); `mon_init` arranca con la experiencia de su nivel. Cifras del nivel 100: 1 000 000 / 1 059 860 / 800 000 / 1 250 000 |
 | GAM-04 | Mochila e items | M |
 | GAM-05 | Guardado/guardado completo en `save()` | M |
 | GAM-06 | Pokédex | M |

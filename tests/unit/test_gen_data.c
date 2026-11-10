@@ -162,7 +162,7 @@ int main(void) {
         for (int k = 0; k < 6; k++) assert(sp->base[k] > 0);
         assert(sp->catch_rate > 0);
         assert(sp->base_exp > 0);
-        assert(sp->growth <= PC_GROWTH_SLOW);
+        assert(sp->growth < PC_GROWTH_COUNT);
     }
     assert(species == 290);
 
@@ -180,6 +180,32 @@ int main(void) {
     assert(rattata->base[0] == 30 && rattata->base[1] == 56);
     assert(rattata->base[2] == 35 && rattata->base[3] == 72);
     assert(rattata->base[4] == 25 && rattata->base[5] == 35);
+
+    /* ---- growth curves ---- */
+    /* The four coefficient rows of data/growth_rates.asm, signed quadratic
+     * included. A misread of the `-\3 | $80` sign would make Medium Slow the
+     * fastest curve of all without moving any other table. */
+    assert(PC_GROWTH_COUNT == 4);
+    assert(pc_growth_rates[PC_GROWTH_MEDIUM_FAST].a == 1 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_FAST].b == 1 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_FAST].c == 0 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_FAST].d == 0 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_FAST].e == 0);
+    assert(pc_growth_rates[PC_GROWTH_MEDIUM_SLOW].a == 6 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_SLOW].b == 5 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_SLOW].c == -15 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_SLOW].d == 100 &&
+           pc_growth_rates[PC_GROWTH_MEDIUM_SLOW].e == 140);
+    assert(pc_growth_rates[PC_GROWTH_FAST].a == 4 &&
+           pc_growth_rates[PC_GROWTH_FAST].b == 5 &&
+           pc_growth_rates[PC_GROWTH_FAST].c == 0 &&
+           pc_growth_rates[PC_GROWTH_FAST].d == 0 &&
+           pc_growth_rates[PC_GROWTH_FAST].e == 0);
+    assert(pc_growth_rates[PC_GROWTH_SLOW].a == 5 &&
+           pc_growth_rates[PC_GROWTH_SLOW].b == 4 &&
+           pc_growth_rates[PC_GROWTH_SLOW].c == 0 &&
+           pc_growth_rates[PC_GROWTH_SLOW].d == 0 &&
+           pc_growth_rates[PC_GROWTH_SLOW].e == 0);
 
     /* ---- moves ---- */
     /* 255 moves after the build's conditionals are resolved; id 0 is "no move"

@@ -619,6 +619,37 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   (`--gc-sections`) y el `.mote` no cambia de tamaño. Eso sí: el primer `game.c` que
   llame a `mon_init` lo mete entero, así que el salto llegará de golpe.
 
+## Trampas nuevas (fase 3: experiencia y niveles)
+
+- **`CalcExpAtLevel` divide el término cúbico antes de sumar el cuadrático.** La fórmula
+  de la cabecera (`a/b·n³ + c·n² + d·n − e`) se lee como si todo se sumara y se redondeara
+  al final; el asm multiplica `n³` por `a`, **divide por `b`** y guarda ese cociente en la
+  pila antes de tocar `c`. Medium Slow en el nivel 2 da 9 (`48/5 − 60 + 200 − 140`), no
+  10. Con los cuatro totales del nivel 100 el error no se ve; con un mon de nivel 2 sí.
+- **`c` es negativo y la tabla lo guarda como signo + magnitud.** `growth_rate 6, 5, -15,
+  …` se ensambla como `db -15 | $80` = `$8f`, no como un `db -15`. Leer el byte sin mirar
+  el bit 7 da 241 y convierte Medium Slow en la curva más lenta del juego.
+- **El nivel 1 es un caso especial, no el resultado de la fórmula.** Con `n = 1`, Medium
+  Slow da `6/5 − 15 + 100 − 140`, que es negativo. El asm devuelve 0 sin calcular, y el
+  port también.
+- **La experiencia se para en el total del nivel 100.** `GiveExperiencePoints` comprueba
+  `level == MAX_LEVEL` antes de dar nada, y además recorta el total al requisito del 100
+  (`CalcExpAtLevel(100)`) después de sumar. Sin ese recorte un mon de nivel 99 puede
+  guardar experiencia de sobra y saltarse niveles al evolucionar.
+- **Subir de nivel no cura ni desmaya: mueve el PS por la diferencia de máximos.**
+  `UpdatePkmnStats` suma `(nuevo máximo − viejo máximo)` al PS actual, deja quieto a un mon
+  desmayado y sube a 1 cualquier resultado ≤ 0 (el parche del glitch de la Pomeg). Ni
+  porcentaje ni clamp al máximo: un mon al 50 % sigue al 50 % **del máximo nuevo**, que no
+  es lo mismo cuando el máximo sube.
+- **Un premio de experiencia puede subir varios niveles.** `CalcLevel` escanea desde el
+  nivel 2 comparando con `CalcExpAtLevel`, no suma uno; y el original recorre después cada
+  nivel ganado para enseñar sus movimientos. Por eso `mon_add_exp` devuelve el número de
+  niveles: quien lo llame tiene que poder anunciar cada uno y no perder ninguno por el
+  camino.
+- **Un mon creado a un nivel con `exp = 0` está mal.** `mon_init` pone la experiencia del
+  nivel en su curva; si no, el primer KO de un mon salvaje de nivel 20 lo haría subir dos
+  o tres niveles de golpe.
+
 ## Lo que sí funcionó como oráculo
 
 - **Elm's Lab / PlayersHouse1F**: una sala tiene estructura inequívoca (paredes,
@@ -650,9 +681,9 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **El reloj** (`ow/clock`) acumula tiempo jugado (sin RTC, 6×: un día cada cuatro horas
   de partida), decide la fase con las horas del original y el grupo de paleta con la
   fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
-- Verificado: `scripts/test.sh` (22 programas unitarios y 7 escenarios, todos en verde,
-  `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_mon` y `test_mon_party`
-  incluidos; 24 programas unitarios),
+- Verificado: `scripts/test.sh` (25 programas unitarios y 7 escenarios, todos en verde,
+  `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_level`, `test_mon_mon` y
+  `test_mon_party` incluidos),
   build host y de device (83 776 B, `.bss` 3 812 B), las tres franjas del día en el
   emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
   captura headless

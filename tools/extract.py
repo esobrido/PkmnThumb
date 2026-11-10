@@ -2863,7 +2863,32 @@ def move_table(pc):
     return out
 
 
-def emit_pokemon(path, species, types, growths):
+def growth_table(pc, growths):
+    """data/growth_rates.asm -> [(a, b, c, d, e)], in GROWTH_* order.
+
+    The macro's own comment is the formula: `[1]/[2]*n**3 + [3]*n**2 + [4]*n - [5]`.
+    `c` is negative for Medium Slow, stored as sign + magnitude in the table
+    (`db -\3 | $80`); the extractor keeps the signed value and the port reads it
+    from an `int8_t`.
+    """
+    where = "data/growth_rates.asm"
+    txt = asm_source(pc, where)
+    rows = []
+    for line in txt.splitlines():
+        code = line.split(";")[0].strip()
+        m = re.match(r"growth_rate\s+(.+)$", code)
+        if not m:
+            continue
+        a = [x.strip() for x in split_args(m.group(1))]
+        if len(a) != 5:
+            die("%s: growth_rate with %d fields: %r" % (where, len(a), code))
+        rows.append(tuple(int(x) for x in a))
+    if len(rows) != len(growths):
+        die("%s: %d rows for %d growth rates" % (where, len(rows), len(growths)))
+    return rows
+
+
+def emit_pokemon(path, species, types, growths, growth_rows):
     """gen/pokemon.h: every species with its types, base stats and growth data.
 
     Names share one blob with an (offset, length) pair per species: 291 separate
@@ -2898,6 +2923,15 @@ def emit_pokemon(path, species, types, growths):
         f.write("enum {\n")
         for i, g in enumerate(growths):
             f.write("\tPC_GROWTH_%s = %d,\n" % (g, i))
+        f.write("};\n\n")
+        f.write("#define PC_GROWTH_COUNT %d\n\n" % len(growths))
+        f.write("/* exp(n) = a/b * n**3 + c * n**2 + d * n - e, the coefficients of\n"
+                " * data/growth_rates.asm. `c` is signed (Medium Slow is -15). */\n")
+        f.write("typedef struct { uint8_t a, b; int8_t c; uint8_t d, e; } PcGrowth;\n\n")
+        f.write("static const PcGrowth pc_growth_rates[PC_GROWTH_COUNT] = {\n")
+        for i, (a, b, c, d, e) in enumerate(growth_rows):
+            f.write("\t{%2d,%2d,%4d,%4d,%4d},  /* %s */\n"
+                    % (a, b, c, d, e, growths[i]))
         f.write("};\n\n")
         f.write("/* name bytes, in the game's charmap (see PcSpecies.name) */\n")
         f.write("static const uint8_t pc_species_names[%d] = {\n" % max(1, len(blob)))
@@ -3322,8 +3356,9 @@ def main():
                         "types": [type_id[t] for t in st["types"]],
                         "base": st["bst"], "catch": st["catch"],
                         "exp": st["exp"], "growth": growth_id[st["growth"]]}
+    growth_rows = growth_table(pc, growths)
     ppath = os.path.join(out, "pokemon.h")
-    emit_pokemon(ppath, species, type_names, growths)
+    emit_pokemon(ppath, species, type_names, growths, growth_rows)
     print("species   %d in %s (%d KB, %d forms skipped)"
           % (len(species), ppath, os.path.getsize(ppath) // 1024, forms_skipped))
 

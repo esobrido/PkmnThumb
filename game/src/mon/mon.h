@@ -22,6 +22,7 @@
 
 #include "gen/moves.h"
 #include "gen/pokemon.h"
+#include "mon/level.h"
 
 /* Names are the game's charmap bytes: 10 glyphs plus a terminator (MON_NAME_LENGTH). */
 #define MON_NICK_LEN 11
@@ -43,7 +44,9 @@ typedef struct {
     uint8_t nickname[MON_NICK_LEN];
 } Mon;
 
-/* Fill in a mon: species, level, DVs, full HP, no moves, no nickname. */
+/* Fill in a mon: species, level, DVs, full HP, no moves, no nickname.
+ * Experience is set to what that level costs on the species' curve, so a mon
+ * made at level 20 already has the experience of a level 20, as a wild one. */
 void mon_init(Mon *m, int species, int level, uint16_t dv);
 
 /* Recompute the six stats from the species' base stats, the level and the DVs
@@ -71,5 +74,24 @@ void mon_set_move(Mon *m, int slot, int move);
 /* A Pokémon Center visit: full HP and no status. PP is not restored, as in the
  * original (that is what Ethers are for). */
 void mon_heal(Mon *m);
+
+/* The species' growth curve (PC_GROWTH_*), or -1 for an empty mon. */
+int mon_growth(const Mon *m);
+
+/* What the species' curve asks for at that level. */
+uint32_t mon_exp_for_level(const Mon *m, int level);
+
+/* Experience still missing for the next level (0 at level 100). */
+uint32_t mon_exp_to_next(const Mon *m);
+
+/* Award experience and level up as far as the total allows, recalculating the
+ * stats. Returns the number of levels gained (0 when none), so the caller can
+ * announce each one and teach its level-up moves.
+ *
+ * The current HP follows the maximum up by the same amount, and never faints a
+ * mon that was standing: UpdatePkmnStats in the original adds the delta and
+ * floors the result at 1. A fainted mon stays at 0. Experience stops at level
+ * 100, capped at that level's total, as in GiveExperiencePoints. */
+int mon_add_exp(Mon *m, uint32_t gained);
 
 #endif

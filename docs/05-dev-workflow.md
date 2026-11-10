@@ -201,18 +201,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.19.0.mote` | el módulo que se copia al dispositivo (83 776 B) |
+| `PolishedCrystal-0.20.0.mote` | el módulo que se copia al dispositivo (83 776 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.19.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.20.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.19.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.20.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.19.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.20.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

@@ -19,7 +19,9 @@ static void test_stats(void) {
     CHECK_EQ(b.stat[MON_SDF], 11);
     /* A new mon arrives at full HP. */
     CHECK_EQ(b.hp, b.stat[MON_HP]);
-    CHECK_EQ(b.exp, 0);
+    /* A mon made at level 5 already has the Medium Slow total for level 5:
+     * (6 * 125) / 5 - 15 * 25 + 500 - 140 = 135. */
+    CHECK_EQ(b.exp, 135);
     CHECK_EQ(b.status, 0);
 
     /* All DVs at 15: the HP DV is 15 too, and every stat grows. */
@@ -142,6 +144,68 @@ static void test_recalc(void) {
     CHECK_EQ(b.hp, b.stat[MON_HP]);
 }
 
+/* Experience buys levels one at a time, and the HP moves with the maximum by the
+ * difference, as UpdatePkmnStats does: (MaxHP on level up) + (damage taken). */
+static void test_exp(void) {
+    Mon b;
+    mon_init(&b, PC_SPECIES_BULBASAUR, 5, 0);
+    CHECK_EQ(mon_growth(&b), PC_GROWTH_MEDIUM_SLOW);
+    CHECK_EQ(mon_exp_for_level(&b, 5), 135u);
+    CHECK_EQ(mon_exp_for_level(&b, 6), 179u);
+    CHECK_EQ(mon_exp_to_next(&b), 44u);            /* 179 - 135 */
+
+    b.hp = 10;
+    CHECK_EQ(mon_add_exp(&b, 43), 0);              /* one short */
+    CHECK_EQ(b.level, 5);
+    CHECK_EQ(b.exp, 178);
+    CHECK_EQ(b.hp, 10);
+
+    CHECK_EQ(mon_add_exp(&b, 1), 1);
+    CHECK_EQ(b.level, 6);
+    CHECK_EQ(b.exp, 179);
+    CHECK_EQ(b.stat[MON_HP], 21);                  /* (2*45+1)*6/100 = 5, + 16 */
+    CHECK_EQ(b.hp, 12);                            /* 10 + (21 - 19) */
+    CHECK_EQ(mon_exp_to_next(&b), 57u);            /* level 7 costs 236 */
+
+    /* One award can jump several levels; the return value is the count, so the
+     * caller can announce each one. */
+    Mon jump;
+    mon_init(&jump, PC_SPECIES_BULBASAUR, 5, 0);
+    int levels = mon_add_exp(&jump, 5000);
+    CHECK(levels > 1);
+    CHECK_EQ(jump.level, 5 + levels);
+    CHECK(mon_exp_for_level(&jump, jump.level) <= jump.exp);
+    CHECK(jump.exp < mon_exp_for_level(&jump, jump.level + 1));
+    /* The maximum grew by more than the HP did only if the mon was hurt; a full
+     * mon stays full through any number of levels. */
+    CHECK_EQ(jump.hp, jump.stat[MON_HP]);
+
+    /* A fainted mon levels up but does not come back. */
+    Mon dead;
+    mon_init(&dead, PC_SPECIES_BULBASAUR, 5, 0);
+    dead.hp = 0;
+    CHECK_EQ(mon_add_exp(&dead, 44), 1);
+    CHECK_EQ(dead.level, 6);
+    CHECK_EQ(dead.hp, 0);
+
+    /* Level 100 is the end: experience is clamped to the total and no more
+     * levels are handed out. */
+    Mon top;
+    mon_init(&top, PC_SPECIES_BULBASAUR, 99, 0);
+    CHECK_EQ(mon_add_exp(&top, 1000000000u), 1);
+    CHECK_EQ(top.level, MON_MAX_LEVEL);
+    CHECK_EQ(top.exp, 1059860u);
+    CHECK_EQ(mon_exp_to_next(&top), 0u);
+    CHECK_EQ(mon_add_exp(&top, 1000), 0);
+    CHECK_EQ(top.exp, 1059860u);
+
+    /* An empty mon cannot gain experience either. */
+    Mon none;
+    mon_init(&none, 0, 5, 0);
+    CHECK_EQ(mon_growth(&none), -1);
+    CHECK_EQ(mon_add_exp(&none, 1000), 0);
+}
+
 /* An empty slot is a mon with no species: no stats, no name, no type. */
 static void test_empty(void) {
     Mon m;
@@ -164,6 +228,7 @@ int main(void) {
     test_moves();
     test_heal();
     test_recalc();
+    test_exp();
     test_empty();
     return test_report("test_mon_mon");
 }

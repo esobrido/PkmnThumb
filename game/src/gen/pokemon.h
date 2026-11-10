@@ -331,6 +331,19 @@ enum {
 	PC_GROWTH_SLOW = 3,
 };
 
+#define PC_GROWTH_COUNT 4
+
+/* exp(n) = a/b * n**3 + c * n**2 + d * n - e, the coefficients of
+ * data/growth_rates.asm. `c` is signed (Medium Slow is -15). */
+typedef struct { uint8_t a, b; int8_t c; uint8_t d, e; } PcGrowth;
+
+static const PcGrowth pc_growth_rates[PC_GROWTH_COUNT] = {
+	{ 1, 1,   0,   0,   0},  /* MEDIUM_FAST */
+	{ 6, 5, -15, 100, 140},  /* MEDIUM_SLOW */
+	{ 4, 5,   0,   0,   0},  /* FAST */
+	{ 5, 4,   0,   0,   0},  /* SLOW */
+};
+
 /* name bytes, in the game's charmap (see PcSpecies.name) */
 static const uint8_t pc_species_names[2138] = {
 	0x81,0xb4,0xab,0xa1,0xa0,0xb2,0xa0,0xb4,0xb1,0x88,0xb5,0xb8,0xb2,0xa0,0xb4,0xb1,

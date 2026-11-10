@@ -238,7 +238,7 @@ número del asm (un `MON_*`, un `move`) siga significando lo mismo aquí:
 
 | Cabecera | Qué contiene |
 |---|---|
-| `gen/pokemon.h` | `pc_species[292]`: nombre (offset + longitud en un blob de charmap), los dos tipos, las seis stats base en el orden de `wBaseStats` (PS, ataque, defensa, velocidad, at. esp., def. esp.), catch rate, exp base y curva de crecimiento. También los enums de tipos (`PC_TYPE_*`, 19 valores) y de curvas (`PC_GROWTH_*`). 40 KB |
+| `gen/pokemon.h` | `pc_species[292]`: nombre (offset + longitud en un blob de charmap), los dos tipos, las seis stats base en el orden de `wBaseStats` (PS, ataque, defensa, velocidad, at. esp., def. esp.), catch rate, exp base y curva de crecimiento. También los enums de tipos (`PC_TYPE_*`, 19 valores) y de curvas (`PC_GROWTH_*`), y `pc_growth_rates[4]` con los coeficientes `a/b·n³ + c·n² + d·n − e` de `data/growth_rates.asm`. 40 KB |
 | `gen/moves.h` | `pc_moves[256]`: nombre, tipo, categoría (física/especial/estado), potencia, precisión (`-1` = no falla), PP, el número de `EFFECT_*` para BAT-03 y la probabilidad del efecto. Id 0 = `NO_MOVE`, 1..255 los movimientos. 32 KB |
 
 Tres reglas del original que el extractor respeta y que no se pueden adivinar leyendo el
@@ -256,6 +256,14 @@ Tres reglas del original que el extractor respeta y que no se pueden adivinar le
 - **Los nombres son bytes de charmap**, no ASCII: `B` es `$81` y `a` es `$b4`. Se leen con
   el mismo `charmap` que los textos, así que `mon_name` puede pasarlos a `text/font` sin
   traducción.
+
+`mon/level` evalúa las cuatro curvas con la fórmula de `CalcExpAtLevel` —el término
+cúbico se divide **antes** de sumar el cuadrático, y `c` es negativo en Medium Slow— y
+`mon_add_exp` reproduce `GiveExperiencePoints` + `CalcLevel`: un solo premio puede subir
+varios niveles (devuelve cuántos, para anunciarlos y enseñar sus movimientos), la
+experiencia se para en el total del nivel 100 y el PS actual sube con el máximo por la
+diferencia de `UpdatePkmnStats`, sin resucitar a un mon desmayado. `mon_init` deja al mon
+con la experiencia de su nivel, como uno salvaje.
 
 `mon/mon` y `mon/party` son las estructuras que consumen esos datos (ver
 [05](05-dev-workflow.md) para el tamaño de cada una): un `Mon` no guarda stats base ni
@@ -626,7 +634,9 @@ grupo `day` ya estaba), los ocho bytes nuevos por objeto (`time_mask`) y `ow/clo
 que mide 268 B de `.text` para llevar la hora, la fase, el grupo de paleta y la máscara
 horaria. La 0.19.0 **no añade flash**: las tablas de especies y movimientos (72 KB de
 cabecera) y `mon/mon` (`9 402 B` de `.text` en su objeto) existen y compilan, pero no
-los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. El presupuesto de flash no es
+los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. La 0.20.0
+(experiencia y niveles: `mon/level` más `mon_add_exp`) tampoco mueve el `.mote` ni el
+`.bss`, por el mismo motivo. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

@@ -6,11 +6,12 @@ static const PcSpecies *species_of(int species) {
     return sp->base[MON_HP] ? sp : 0;
 }
 
-void mon_recalc(Mon *m) {
+/* The six stats, and nothing else: level-up needs to move the maximum without
+ * touching the current HP, and it applies its own delta rule afterwards. */
+static void calc_stats(Mon *m) {
     const PcSpecies *sp = species_of(m->species);
     if (!sp) {
         for (int i = 0; i < MON_STAT_COUNT; i++) m->stat[i] = 0;
-        m->hp = 0;
         return;
     }
 
@@ -31,13 +32,15 @@ void mon_recalc(Mon *m) {
     /* CalcPkmnStatC: ((2 * (base + DV) + 1) * level) / 100, plus level + 10 for
      * HP and 5 for everything else. The + 1 is the game's own (it stands in for
      * the stat experience term, which the port does not carry yet). */
-    uint16_t old_max = m->stat[MON_HP];
     for (int i = 0; i < MON_STAT_COUNT; i++) {
         int v = (2 * ((int)sp->base[i] + dv[i]) + 1) * m->level / 100;
         m->stat[i] = (uint16_t)(v + (i == MON_HP ? m->level + 10 : 5));
     }
+}
 
-    if (old_max == 0 || m->hp > m->stat[MON_HP]) m->hp = m->stat[MON_HP];
+void mon_recalc(Mon *m) {
+    calc_stats(m);
+    if (m->stat[MON_HP] == 0 || m->hp > m->stat[MON_HP]) m->hp = m->stat[MON_HP];
 }
 
 void mon_init(Mon *m, int species, int level, uint16_t dv) {
@@ -55,6 +58,7 @@ void mon_init(Mon *m, int species, int level, uint16_t dv) {
     m->hp = 0;
     mon_recalc(m);
     m->hp = m->stat[MON_HP];
+    m->exp = mon_exp_for_level(m, m->level);
 }
 
 int mon_base_stat(const Mon *m, int which) {
@@ -99,4 +103,46 @@ void mon_set_move(Mon *m, int slot, int move) {
 void mon_heal(Mon *m) {
     m->hp = m->stat[MON_HP];
     m->status = 0;
+}
+
+int mon_growth(const Mon *m) {
+    const PcSpecies *sp = species_of(m->species);
+    return sp ? sp->growth : -1;
+}
+
+uint32_t mon_exp_for_level(const Mon *m, int level) {
+    return level_exp_at(mon_growth(m), level);
+}
+
+uint32_t mon_exp_to_next(const Mon *m) {
+    return level_exp_to_next(mon_growth(m), m->level, m->exp);
+}
+
+int mon_add_exp(Mon *m, uint32_t gained) {
+    const PcSpecies *sp = species_of(m->species);
+    if (!sp || m->level >= MON_MAX_LEVEL) return 0;
+
+    /* GiveExperiencePoints stores the total and then clamps it to the level 100
+     * requirement, so no mon can bank experience past the cap. */
+    uint64_t total = (uint64_t)m->exp + gained;
+    uint32_t cap = level_exp_at(sp->growth, MON_MAX_LEVEL);
+    m->exp = total > cap ? cap : (uint32_t)total;
+
+    int level = level_from_exp(sp->growth, m->exp);
+    if (level <= m->level) return 0;
+    int levels = level - (int)m->level;
+
+    /* UpdatePkmnStats: the current HP moves with the maximum by the difference,
+     * a fainted mon is left alone, and a standing one never drops to 0. */
+    uint16_t old_max = m->stat[MON_HP];
+    int old_hp = m->hp;
+    m->level = (uint8_t)level;
+    calc_stats(m);
+    if (old_hp != 0) {
+        int hp = old_hp + ((int)m->stat[MON_HP] - (int)old_max);
+        if (hp <= 0) hp = 1;
+        if (hp > (int)m->stat[MON_HP]) hp = (int)m->stat[MON_HP];
+        m->hp = (uint16_t)hp;
+    }
+    return levels;
 }

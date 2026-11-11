@@ -83,6 +83,7 @@ static void test_ascii_codes(void) {
     assert(font_code_from_ascii('z') == 0xb9);
     assert(font_code_from_ascii('5') == 0xe5);
     assert(font_code_from_ascii('.') == 0x9c);
+    assert(font_code_from_ascii('/') == 0xdc);
     assert(font_code_from_ascii('~') == 0x9e);   /* unknown -> '?' */
 }
 

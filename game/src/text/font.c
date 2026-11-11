@@ -43,6 +43,7 @@ uint8_t font_code_from_ascii(char c) {
     if (c == '!') return 0x9f;
     if (c == '-') return 0xbc;
     if (c == ':') return 0xbd;
+    if (c == '/') return 0xdc;      /* "19/19" in the battle HP line */
     if (c == '\'') return 0xc0;
     return 0x9e;
 }

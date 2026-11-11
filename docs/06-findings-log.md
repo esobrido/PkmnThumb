@@ -681,6 +681,24 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **La tabla de prioridades incluye `NO_MOVE` con 10.** Es el pseudo-movimiento del
   cambio forzado (`Pursuit`), no un error: `battle_priority(0)` devuelve 10. Los empates
   de velocidad los decide el RNG (`CheckSpeed`), no el turno anterior.
+- **El "19/19" de los PS necesita el glifo `/` del charmap ($dc).**
+  `font_code_from_ascii` no lo mapeaba y el número salía como `19?19`: un carácter no
+  soportado se convierte en `?`, que es un fallo silencioso hasta que alguien mira la
+  pantalla. Cualquier signo nuevo (una barra, un paréntesis) hay que buscarlo antes en
+  `constants/charmap.asm`, no suponerlo.
+- **A 128 px, "RATTATA Lv3" no cabe en una ventana de 80 px.** Con el nombre y el nivel
+  en la misma línea el nombre se queda en seis letras ("Rattat"). El nivel baja a su
+  propia fila y el nombre usa las nueve que caben.
+- **Las frases de batalla no pueden venir del bytecode de texto de los mapas.** Nombran
+  un mon, un movimiento y un número que sólo se conocen al pelear, así que se componen en
+  códigos de glifo en tiempo de ejecución; el revelado letra a letra sí se copia del
+  textbox (dos fotogramas por letra).
+- **El nombre de un movimiento más su PP no caben en una línea.** "Smokescreen" son 13
+  glifos (104 px) y con el ▶ ya no queda sitio para "PP 35/35"; la lista ocupa las cuatro
+  filas y el PP del movimiento apuntado va a una ventana aparte.
+- **START no sirve de atajo en el host: es del lanzador de Mote.** Pulsar MENU durante el
+  juego devuelve a la galería, así que el atajo de depuración de la batalla es RB + LB a
+  la vez, comprobado antes de los saltos de mapa de cada uno de esos botones.
 - **La experiencia de un KO es `exp_base · nivel / 7`, mínimo 1.** La opción
   `SCALED_EXP` (apagada por defecto) cambia el divisor a 5, y la batalla de entrenador
   multiplica por 1,5 **después** de dividir. A nivel 100 no se da nada, aunque el mon
@@ -717,10 +735,10 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **El reloj** (`ow/clock`) acumula tiempo jugado (sin RTC, 6×: un día cada cuatro horas
   de partida), decide la fase con las horas del original y el grupo de paleta con la
   fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
-- Verificado: `scripts/test.sh` (28 programas unitarios y 7 escenarios, todos en verde,
+- Verificado: `scripts/test.sh` (29 programas unitarios y 7 escenarios, todos en verde,
   `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_level`, `test_mon_mon`,
-  `test_mon_party`, `test_battle_type`, `test_battle_damage` y `test_battle_turn`
-  incluidos),
+  `test_mon_party`, `test_battle_type`, `test_battle_damage`, `test_battle_turn` y
+  `test_ui_battle` incluidos),
   build host y de device (83 776 B, `.bss` 3 812 B), las tres franjas del día en el
   emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
   captura headless

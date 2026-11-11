@@ -37,6 +37,23 @@ MOTE_DT_MS=16 ./scripts/shot.sh artifacts/talk.png 214 \
 
 `shot.sh` recompila antes de capturar: un `.so` viejo produce capturas engañosas.
 
+La batalla no está en el mapa, así que se entra con el atajo de depuración RB + LB (START
+es del lanzador de Mote, y pulsarlo durante el juego devuelve a la galería). Después, A
+avanza los textos y elige FIGHT; las capturas del menú, la lista de movimientos y el
+golpe salen de la misma partida:
+
+```sh
+./scripts/shot.sh artifacts/battle_menu.png 230 \
+    "a:100-106,rb:150-400,lb:150-400,a:180-183,a:190-193,a:200-203,a:210-213"
+./scripts/shot.sh artifacts/battle_move.png 260 \
+    "a:100-106,rb:150-400,lb:150-400,a:180-183,a:190-193,a:200-203,a:210-213,a:240-243"
+./scripts/shot.sh artifacts/battle_hit.png 320 \
+    "a:100-106,rb:150-400,lb:150-400,a:180-183,a:190-193,a:200-203,a:210-213,a:240-243,a:280-283"
+```
+
+Los fotogramas de `MOTE_KEYS` cuentan lecturas del pad, y el juego arranca desde el
+lanzador con el primer A: por eso el atajo empieza en el fotograma 150 y no en el 10.
+
 El extractor emite **un solo** `gen/world.h` con todos los mapas que se le pasen, sus
 tilesets (sólo los distintos) y todos los sprites:
 
@@ -178,7 +195,7 @@ perf fps=60 update_us=120 raster_us=830 flush_us=210 core0%=42 core1%=38
 | `fps` | ~487 (sin límite de vsync) | **sin medir** |
 | `raster_us` | 20 | **sin medir** |
 | `update_us` | 0 (por debajo de la resolución del temporizador) | **sin medir** |
-| `.mote` | — | 83 776 B, `.bss` 3 812 B |
+| `.mote` | — | 111 896 B, `.bss` 4 488 B (con la pantalla de batalla) |
 | Fundido de puerta (16 384 px, nivel 1-9) | 61 µs | **sin medir** (~0,7 ms estimados por reloj) |
 
 El fundido se mide aparte porque sólo ocurre dentro de una puerta: un banco de 300
@@ -201,18 +218,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.21.0.mote` | el módulo que se copia al dispositivo (83 776 B) |
+| `PolishedCrystal-0.22.0.mote` | el módulo que se copia al dispositivo (111 896 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.21.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.22.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.21.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.22.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.21.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.22.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

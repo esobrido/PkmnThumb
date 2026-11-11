@@ -290,8 +290,41 @@ mismo turno en un test o en una repetición.
 
 Lo que BAT-01 **no** hace todavía, y por eso no se finge: precisión y críticos (BAT-02),
 efectos de movimiento (BAT-03, donde vive la potencia calculada de `power = 1`), estados
-y cambios de stats (BAT-04), captura (BAT-05) y la pantalla de batalla (BAT-07). Un
-movimiento de estado gasta su PP y no hace nada más. Nada de esto lo usa aún `game.c`.
+y cambios de stats (BAT-04) y captura (BAT-05). Un movimiento de estado gasta su PP y no
+hace nada más.
+
+## Batalla: la pantalla
+
+`ui/battle` es la pantalla de BAT-07: la coloca como el original — la ventana del rival
+en la esquina superior izquierda, la tuya en la inferior derecha, el texto abajo y el
+menú de cuatro acciones sobre el texto — y pierde las dos imágenes de los mons, que son
+una hoja de sprites sin extraer.
+
+Lo que no se puede deducir del original a 128×128:
+
+- **Las frases se componen, no se leen.** Una batalla nombra un mon, un movimiento y un
+  número que sólo existen en tiempo de ejecución, así que no puede usar el bytecode de
+  texto de los mapas: `ui/battle` construye la frase en códigos de glifo (nombre de la
+  tabla de especies, nombre de la tabla de movimientos, número en decimal) y la revela
+  dos fotogramas por letra, como el textbox.
+- **El nivel va en su propia fila.** La ventana mide 80 px y "RATTATA Lv3" pide 80: en la
+  misma línea el nombre se cortaba a seis letras. Ahora el nombre ocupa la primera fila
+  entera (hasta nueve glifos), la barra de PS la segunda y el nivel la tercera; el mon
+  propio añade al lado sus PS en números (`19/19`), que el rival no lleva.
+- **El PP tiene su ventana.** Un nombre de movimiento largo ("Smokescreen", 13 glifos)
+  con ▶ y "PP 35/35" no cabe en una línea de 128 px, así que la lista ocupa las cuatro
+  filas del cuadro de texto y el PP del movimiento apuntado sale en la ventanita de la
+  esquina superior derecha.
+- **Las acciones no se inventan.** FIGHT es la única que hace algo; PKMN, PACK y RUN
+  dicen qué sistema esperan (la pantalla de equipo de GAM-02, los objetos de BAT-04 y la
+  huida de BAT-05) en vez de fingir un efecto.
+
+`game.c` entra en la batalla con un atajo de depuración (RB + LB a la vez), porque no hay
+encuentros en la hierba alta todavía y el juego no tiene equipo con el que elegir mon: el
+jugador pelea con un Cyndaquil de nivel 5 creado la primera vez y conservado entre
+batallas (para que la experiencia se vea), y el salvaje es un Rattata de nivel 3 nuevo
+cada vez. Mientras la batalla está abierta, el mapa no se dibuja: el render de bandas
+pinta el fondo y el overlay sólo pinta la pantalla de batalla.
 
 ## Texto
 
@@ -656,9 +689,10 @@ que mide 268 B de `.text` para llevar la hora, la fase, el grupo de paleta y la 
 horaria. La 0.19.0 **no añade flash**: las tablas de especies y movimientos (72 KB de
 cabecera) y `mon/mon` (`9 402 B` de `.text` en su objeto) existen y compilan, pero no
 los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. La 0.20.0
-(experiencia y niveles: `mon/level` más `mon_add_exp`) y la 0.21.0 (la batalla:
+(experiencia y niveles: `mon/level` más `mon_add_exp`) y la 0.21.0 (el motor de batalla:
 `battle/type`, `battle/damage` y `battle/turn`) tampoco mueven el `.mote` ni el `.bss`,
-por el mismo motivo. El presupuesto de flash no es
+por el mismo motivo. La 0.22.0 sí lo mueve, porque `game.c` ya llama a la pantalla de
+batalla: de 83 776 B a **111 896 B** de `.mote` y de 3 812 B a **4 488 B** de `.bss`. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

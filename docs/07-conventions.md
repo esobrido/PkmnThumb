@@ -102,6 +102,7 @@ llamando a `mote build game` directamente.
 | `game/src/battle/type.c` | `tests/unit/test_battle_type.c` |
 | `game/src/battle/damage.c` | `tests/unit/test_battle_damage.c` |
 | `game/src/battle/turn.c` | `tests/unit/test_battle_turn.c` |
+| `game/src/ui/battle.c` | `tests/unit/test_ui_battle.c` |
 
 Además, `tests/unit/test_gen_data.c` prueba **los datos generados** en sí: que cada
 índice de texto/sprite que guarda un `PcObject` apunta a algo, que cada stream empieza en

@@ -58,6 +58,7 @@
 #include "text/box.h"
 #include "ui/menu.h"
 #include "ui/options.h"
+#include "ui/battle.h"
 
 MOTE_GAME_MODULE();
 
@@ -65,7 +66,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.21.0");
+MOTE_GAME_VERSION("0.22.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -355,6 +356,36 @@ static PcOptions options;
 /* Text speed is the one option with something to configure today: the textbox. */
 static void apply_text_speed(void) {
     textbox_set_speed(&textbox, options_text_ticks(options.v[PC_OPT_TEXT_SPEED]));
+}
+
+/* ---- the battle screen ---------------------------------------------------
+ * There are no wild encounters yet (the grass table and the capture rule are
+ * BAT-05/BAT-06) and game.c has no party screen to pick a mon from (GAM-02's
+ * party is a module), so the screen is reached by a debug combination: hold RB
+ * and LB at once. The player's mon is made once and kept, so a win's experience
+ * levels it up for the next battle; the wild one is new every time.
+ */
+static BattleUi battle_ui;
+static int battle_open;
+static Mon battle_mon;
+static int battle_mon_ready;
+static Mon battle_wild;
+
+static void start_battle(void) {
+    if (!battle_mon_ready) {
+        mon_init(&battle_mon, PC_SPECIES_CYNDAQUIL, 5, 0x1234);
+        mon_set_move(&battle_mon, 0, PC_MOVE_TACKLE);
+        mon_set_move(&battle_mon, 1, PC_MOVE_LEER);
+        mon_set_move(&battle_mon, 2, PC_MOVE_EMBER);
+        mon_set_move(&battle_mon, 3, PC_MOVE_SMOKESCREEN);
+        battle_mon_ready = 1;
+    }
+    mon_init(&battle_wild, PC_SPECIES_RATTATA, 3, 0x4321);
+    mon_set_move(&battle_wild, 0, PC_MOVE_TACKLE);
+    mon_set_move(&battle_wild, 1, PC_MOVE_LEER);
+    battle_ui_start(&battle_ui, &battle_mon, &battle_wild, 0x5eed1234u);
+    battle_open = 1;
+    mote->log("battle: debug wild RATTATA");
 }
 
 static void g_init(void) {
@@ -839,6 +870,22 @@ static void g_update(float dt) {
         }
     }
 
+    /* The battle owns the pad while it is up: the world behind it stops, like it
+     * does under a textbox, and every button goes to the screen. */
+    if (battle_open) {
+        battle_ui_update(&battle_ui, 1);
+        int key = mote_just_pressed(in, MOTE_BTN_UP) ? BS_KEY_UP
+                : mote_just_pressed(in, MOTE_BTN_DOWN) ? BS_KEY_DOWN
+                : mote_just_pressed(in, MOTE_BTN_LEFT) ? BS_KEY_LEFT
+                : mote_just_pressed(in, MOTE_BTN_RIGHT) ? BS_KEY_RIGHT
+                : mote_just_pressed(in, MOTE_BTN_A) ? BS_KEY_A
+                : mote_just_pressed(in, MOTE_BTN_B) ? BS_KEY_B : -1;
+        if (key >= 0) battle_ui_key(&battle_ui, key);
+        if (battle_ui_done(&battle_ui)) battle_open = 0;
+        if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
+        return;
+    }
+
     /* A warp freezes the world the way a textbox does: the fade is the door, and
      * the map swaps on the frame the screen is fully white. */
     if (ow_warp_busy(&warp)) {
@@ -917,6 +964,15 @@ static void g_update(float dt) {
         }
         if (mote_just_pressed(in, MOTE_BTN_B) || mote_just_pressed(in, MOTE_BTN_MENU))
             ui_menu_close(&menu);
+        if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
+        return;
+    }
+
+    /* Debug way into the battle screen: RB + LB held together (see
+     * start_battle). It is checked before the single-button map jumps so the
+     * frame the pair goes down does not also load two maps. */
+    if (mote_pressed(in, MOTE_BTN_RB) && mote_pressed(in, MOTE_BTN_LB)) {
+        start_battle();
         if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
         return;
     }
@@ -1005,7 +1061,21 @@ static const uint16_t (*map_pals(void))[4] {
     return g == OW_TOD_INDOOR ? bg_pal_indoor : bg_pal[g];
 }
 
+/* A flat paper band: the battle is a screen of its own, so the map behind it is
+ * not drawn at all (its windows only cover the corners). */
+static void battle_band(uint16_t *fb, int y0, int y1) {
+    uint16_t paper = bg_pal[OW_TOD_DAY][7][0];
+    for (int y = y0; y < y1; y++) {
+        uint16_t *row = &fb[y * SCREEN];
+        for (int x = 0; x < SCREEN; x++) row[x] = paper;
+    }
+}
+
 static void g_band(uint16_t *fb, int y0, int y1) {
+    if (battle_open) {
+        battle_band(fb, y0, y1);
+        return;
+    }
     ow_render_band(fb, SCREEN, SCREEN, y0, y1, &map, tileset->tiles,
                    map_pals(), cam.x, cam.y);
 }
@@ -1014,6 +1084,19 @@ static void g_band(uint16_t *fb, int y0, int y1) {
 #define MAX_DRAW (OW_MAX_ACTORS + 1)
 
 static void g_overlay(uint16_t *fb) {
+    if (battle_open) {
+        /* The text palette is white on black in all four hour groups, so the boxes
+         * never change colour with the clock. */
+        BsPalette pal = {
+            bg_pal[OW_TOD_DAY][7][3], bg_pal[OW_TOD_DAY][7][0],
+            MOTE_RGB565(0x58, 0xD0, 0x48),
+            MOTE_RGB565(0xF8, 0xD0, 0x30),
+            MOTE_RGB565(0xE8, 0x48, 0x40),
+        };
+        battle_ui_draw(&battle_ui, fb, SCREEN, 0, SCREEN, &pal);
+        return;
+    }
+
     /* NPCs and the player are drawn together, sorted by feet y, so a sprite
      * lower on the map covers one higher up — the GB's OAM ordering. */
     int feet[MAX_DRAW], slot_of[MAX_DRAW], n = 0;

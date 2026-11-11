@@ -24,6 +24,8 @@ typedef struct {
     const uint8_t *blocks;         /* w*h block ids, row-major */
     const uint8_t (*mt_tiles)[16]; /* per metatile: 16 tile ids */
     const uint8_t *mt_coll;        /* per metatile: 4 bits, TL=0 TR=1 BL=2 BR=3 */
+    const uint8_t *mt_grass;       /* per metatile: tall/long grass, same 4 bits
+                                      (may be NULL: no map here has grass) */
     const uint8_t *mt_pal;         /* per metatile: 16 palette slots (may be NULL) */
     const uint8_t *cells;          /* optional per-cell blockers, row-major over
                                       (w*2) x (h*2); NULL = tiles only. NPCs
@@ -39,5 +41,13 @@ int ow_cell_blocked(const OwMap *m, int cx, int cy);
 
 /* Same query in pixels; (px, py) must be aligned to the 16 px grid. */
 int ow_px_blocked(const OwMap *m, int px, int py);
+
+/* Is the 16x16 walking cell (cx, cy) tall or long grass? A grass cell is
+ * walkable, so this reads the collision *code* the tileset carries, not the
+ * blocked mask. Out of bounds, or a map with no grass table, is "no". */
+int ow_cell_grass(const OwMap *m, int cx, int cy);
+
+/* Same query in pixels. */
+int ow_px_grass(const OwMap *m, int px, int py);
 
 #endif

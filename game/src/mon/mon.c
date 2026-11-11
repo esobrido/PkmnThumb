@@ -100,6 +100,32 @@ void mon_set_move(Mon *m, int slot, int move) {
     m->pp[slot] = move ? pc_moves[move].pp : 0;
 }
 
+static const PcLearnset *learnset_of(int species) {
+    for (int i = 0; i < PC_LEARNSET_COUNT; i++)
+        if (pc_learnsets[i].species == species) return &pc_learnsets[i];
+    return 0;
+}
+
+void mon_init_moves(Mon *m) {
+    for (int i = 0; i < MON_MOVES; i++) {
+        m->moves[i] = 0;
+        m->pp[i] = 0;
+    }
+    const PcLearnset *ls = learnset_of(m->species);
+    if (!ls) return;
+    int n = 0;
+    for (int i = 0; i < ls->count; i++) {
+        if (ls->moves[i].level > m->level) continue;
+        if (n < MON_MOVES) {
+            mon_set_move(m, n++, ls->moves[i].move);
+        } else {
+            /* Full: the oldest move goes, as LearnMove does. */
+            for (int j = 1; j < MON_MOVES; j++) mon_set_move(m, j - 1, m->moves[j]);
+            mon_set_move(m, MON_MOVES - 1, ls->moves[i].move);
+        }
+    }
+}
+
 void mon_heal(Mon *m) {
     m->hp = m->stat[MON_HP];
     m->status = 0;

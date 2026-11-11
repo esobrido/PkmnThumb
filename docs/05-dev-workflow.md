@@ -54,6 +54,14 @@ golpe salen de la misma partida:
 Los fotogramas de `MOTE_KEYS` cuentan lecturas del pad, y el juego arranca desde el
 lanzador con el primer A: por eso el atajo empieza en el fotograma 150 y no en el 10.
 
+Un encuentro **no** tiene receta reproducible con `MOTE_KEYS`: llegar a la hierba de la
+Ruta 29 andando desde el pueblo y esperar un 3,9 % por paso depende de la velocidad del
+host. La captura `artifacts/enc_grass.png` se hizo con un parche temporal de dos líneas
+en `g_init` —`load_map(PC_MAP_ROUTE29)` más `place_player(37 * 16, 2 * 16, OW_DIR_RIGHT)`,
+sobre la celda libre al oeste de la hierba— y una semilla de `ow_encounter` buscada para
+que el primer paso acertara, y el parche se revirtió después. Comprueba la cadena
+completa (paso → celda de hierba → tabla → batalla), pero no es un atajo del juego.
+
 El extractor emite **un solo** `gen/world.h` con todos los mapas que se le pasen, sus
 tilesets (sólo los distintos) y todos los sprites:
 
@@ -195,7 +203,7 @@ perf fps=60 update_us=120 raster_us=830 flush_us=210 core0%=42 core1%=38
 | `fps` | ~487 (sin límite de vsync) | **sin medir** |
 | `raster_us` | 20 | **sin medir** |
 | `update_us` | 0 (por debajo de la resolución del temporizador) | **sin medir** |
-| `.mote` | — | 111 896 B, `.bss` 4 488 B (con la pantalla de batalla) |
+| `.mote` | — | 113 412 B, `.bss` 4 500 B (con los encuentros y la pantalla de batalla) |
 | Fundido de puerta (16 384 px, nivel 1-9) | 61 µs | **sin medir** (~0,7 ms estimados por reloj) |
 
 El fundido se mide aparte porque sólo ocurre dentro de una puerta: un banco de 300
@@ -218,18 +226,18 @@ destino:
 
 | Fichero | Qué es |
 |---|---|
-| `PolishedCrystal-0.22.0.mote` | el módulo que se copia al dispositivo (111 896 B) |
+| `PolishedCrystal-0.23.0.mote` | el módulo que se copia al dispositivo (113 412 B) |
 | `manifest.json` | versión, ABI, tamaño, `sha256`, commit y si el árbol tenía cambios |
-| `PolishedCrystal-0.22.0.png` | captura de referencia a 128×128 para la galería |
+| `PolishedCrystal-0.23.0.png` | captura de referencia a 128×128 para la galería |
 
-La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.22.0`), que es lo
+La versión la fija `MOTE_GAME_VERSION` en `game/src/game.c` (ahora `0.23.0`), que es lo
 que el lanzador y la galería leen **del propio binario** sin ejecutarlo. Se sube al
 cerrar cada fase; `export.sh` falla si vale `0` (módulo sin versión = siempre "actualizable").
 
 Para inspeccionar un `.mote` suelto (¿qué versión es? ¿carga en este firmware?):
 
 ```sh
-python3 tools/moteinfo.py dist/PolishedCrystal-0.22.0.mote
+python3 tools/moteinfo.py dist/PolishedCrystal-0.23.0.mote
 python3 tools/moteinfo.py x.mote --json
 ```
 

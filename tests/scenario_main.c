@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    OwMap map = { nbx, nby, blocks, (const uint8_t (*)[16])mt_tiles, mt_coll, mt_pal, 0 };
+    OwMap map = { nbx, nby, blocks, (const uint8_t (*)[16])mt_tiles, mt_coll, 0, mt_pal, 0 };
     OwPlayer p;
     ow_player_init(&p, start_tx * OW_STEP_PX, start_ty * OW_STEP_PX, start_dir);
 

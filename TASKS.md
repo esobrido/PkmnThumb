@@ -3,7 +3,7 @@
 Inventario de **todo** lo que hay que migrar y plan de trabajo por fases.
 Estado a día de hoy: **slice 1 (overworld) funcionando**; ver `docs/`.
 
-Progreso: **32 hechos · 11 parciales · 51 pendientes** (el conteo incluye las tablas
+Progreso: **33 hechos · 11 parciales · 51 pendientes** (el conteo incluye las tablas
 de inventario y las tareas del plan).
 
 Leyenda de estado: `✅ hecho` · `🟡 parcial` · `⬜ pendiente` · `⛔ bloqueado`
@@ -45,6 +45,7 @@ Tamaño: `S` (1–2 días) `M` (~1 semana) `L` (2–4 semanas) `XL` (>1 mes), a 
 | OW-11 | Día/noche, tiempo | `engine/rtc/` | 🟡 hecho con SCR-08: reloj de tiempo jugado, paletas por franja y NPCs por horario; hora real y paletas OBJ dependen de SYS-05/SYS-02 |
 | OW-12 | Bicicleta, surf, headbutt, etc. | `engine/overworld/*` | ⬜ |
 | OW-13 | Followers (PC los tiene) | `engine/overworld/followers.asm` | ⬜ |
+| OW-14 | Encuentros salvajes en la hierba | `engine/overworld/wildmons.asm` | ✅ `ow/encounter` con las tablas de `data/wild`, rate/256, las tres franjas y los cinco pasos de espera |
 
 ### 1.3 Eventos y guion (`engine/events/`, 21 940 líneas)
 
@@ -271,17 +272,21 @@ paletas OBJ/hora real (SYS-02/SYS-05) que no bloquean ninguna puerta.
 | BAT-08 | Animaciones de movimientos | L (opcional) |
 | BAT-09 | Batallas dobles | L (opcional) |
 
-**Estado de la fase 4: se pelea en pantalla, con un atajo de depuración.** `battle/type`
+**Estado de la fase 4: las batallas salvajes empiezan al pisar hierba.** `battle/type`
 (tabla de `type_matchups.asm` con el `$fe` de Foresight en su sitio y la inmunidad
 Tierra/Volador de `CheckAirborne`), `battle/damage` (las cuatro pasadas de `damagecalc`, el
 Q4 de tipo y STAB y la variación 85-100 %) y `battle/turn` (prioridad, velocidad, empate
 por RNG, PP, el que cae no responde, y la experiencia del KO por `mon_add_exp`) están
 hechos y probados, y `ui/battle` los pone en pantalla con las dos ventanas de PS, el texto
-compuesto en el momento y el menú de cuatro acciones (FIGHT, PKMN, PACK, RUN). Se entra
-con RB + LB en `game.c`, porque faltan los encuentros en la hierba alta y el juego todavía
-no tiene equipo: BAT-01 y BAT-07 siguen en 🟡 por eso. De BAT-02 falta la precisión y los
-críticos; de BAT-07, los sprites de los mons y las animaciones; y de las cuatro acciones
-sólo FIGHT hace algo (objetos BAT-04, huida BAT-05, cambio GAM-02).
+compuesto en el momento y el menú de cuatro acciones (FIGHT, PKMN, PACK, RUN).
+`ow/encounter` tira en cada paso sobre hierba con la tabla del original (Ruta 29: 10/256
+por paso, `GrassMonProbTable`, franjas morn/day/nite, cinco pasos de espera tras pelear),
+`gen/wild.h` lleva la tabla y `gen/learn.h` los movimientos de subida de nivel de las
+especies que el build puede encontrar. RB + LB sigue abriendo una batalla de depuración.
+BAT-01 y BAT-07 siguen en 🟡 porque el juego no tiene equipo (GAM-02) ni captura
+(BAT-05): de BAT-02 faltan precisión y críticos, de BAT-07 los sprites de los mons y las
+animaciones, y de las cuatro acciones sólo FIGHT hace algo (objetos BAT-04, huida
+BAT-05, cambio GAM-02).
 
 **Puerta F4**: capturar un Pokémon salvaje en Ruta 29 con el motor nuevo, con la misma
 fórmula de daño que el original (verificable contra el asm).

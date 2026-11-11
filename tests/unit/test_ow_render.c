@@ -22,6 +22,7 @@ static OwMap make_map(void) {
     m.blocks = blocks;
     m.mt_tiles = mt_tiles;
     m.mt_coll = mt_coll;
+    m.mt_grass = 0;
     m.mt_pal = mt_pal;
     m.cells = 0;
     return m;

@@ -206,6 +206,46 @@ static void test_exp(void) {
     CHECK_EQ(mon_add_exp(&none, 1000), 0);
 }
 
+/* Level-up moves: every move in the species' list it already knows at this
+ * level, keeping the last four (GiveMonInitialMoveset). */
+static void test_level_moves(void) {
+    Mon c;
+    mon_init(&c, PC_SPECIES_CYNDAQUIL, 5, 0);
+    mon_init_moves(&c);
+    CHECK_EQ(c.moves[0], PC_MOVE_TACKLE);
+    CHECK_EQ(c.moves[1], PC_MOVE_LEER);
+    CHECK_EQ(c.moves[2], 0);
+    CHECK_EQ(c.pp[0], pc_moves[PC_MOVE_TACKLE].pp);
+
+    mon_init(&c, PC_SPECIES_CYNDAQUIL, 10, 0);
+    mon_init_moves(&c);
+    CHECK_EQ(c.moves[0], PC_MOVE_TACKLE);
+    CHECK_EQ(c.moves[1], PC_MOVE_LEER);
+    CHECK_EQ(c.moves[2], PC_MOVE_SMOKESCREEN);
+    CHECK_EQ(c.moves[3], PC_MOVE_EMBER);
+
+    /* A fifth move pushes the oldest out, so the four newest remain. */
+    mon_init(&c, PC_SPECIES_CYNDAQUIL, 13, 0);
+    mon_init_moves(&c);
+    CHECK_EQ(c.moves[0], PC_MOVE_LEER);
+    CHECK_EQ(c.moves[1], PC_MOVE_SMOKESCREEN);
+    CHECK_EQ(c.moves[3], PC_MOVE_QUICK_ATTACK);
+
+    /* A wild Rattata's list, straight from data/pokemon/evos_attacks.asm. */
+    Mon r;
+    mon_init(&r, PC_SPECIES_RATTATA, 3, 0);
+    mon_init_moves(&r);
+    CHECK_EQ(r.moves[0], PC_MOVE_TACKLE);
+    CHECK_EQ(r.moves[1], PC_MOVE_LEER);
+
+    /* A species with no extracted learnset gets nothing; the battle falls
+     * back to Struggle. */
+    Mon b;
+    mon_init(&b, PC_SPECIES_BULBASAUR, 5, 0);
+    mon_init_moves(&b);
+    CHECK_EQ(b.moves[0], 0);
+}
+
 /* An empty slot is a mon with no species: no stats, no name, no type. */
 static void test_empty(void) {
     Mon m;
@@ -229,6 +269,7 @@ int main(void) {
     test_heal();
     test_recalc();
     test_exp();
+    test_level_moves();
     test_empty();
     return test_report("test_mon_mon");
 }

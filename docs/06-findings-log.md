@@ -735,11 +735,11 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
 - **El reloj** (`ow/clock`) acumula tiempo jugado (sin RTC, 6×: un día cada cuatro horas
   de partida), decide la fase con las horas del original y el grupo de paleta con la
   fase + el entorno + el campo horario del header, y esconde a los NPCs con horario.
-- Verificado: `scripts/test.sh` (29 programas unitarios y 7 escenarios, todos en verde,
+- Verificado: `scripts/test.sh` (30 programas unitarios y 7 escenarios, todos en verde,
   `test_ow_move`, `test_text_box`, `test_ow_clock`, `test_mon_level`, `test_mon_mon`,
-  `test_mon_party`, `test_battle_type`, `test_battle_damage`, `test_battle_turn` y
-  `test_ui_battle` incluidos),
-  build host y de device (83 776 B, `.bss` 3 812 B), las tres franjas del día en el
+  `test_mon_party`, `test_battle_type`, `test_battle_damage`, `test_battle_turn`,
+  `test_ui_battle` y `test_ow_encounter` incluidos),
+  build host y de device (113 412 B, `.bss` 4 500 B), las tres franjas del día en el
   emulador (`artifacts/tod_day.png`, `tod_eve.png`, `tod_nite.png`, con `tod:` en el log),
   captura headless
   (`docs/img/door.png` es la secuencia exterior → blanco → interior), la cutscene completa
@@ -747,3 +747,37 @@ por fotograma y una secuencia de 80 frames recorre una celda, no cinco.
   warnings propios (`-Wall -Wextra`; los avisos que salen son de las cabeceras de Mote).
 - No verificado: nada en hardware, ni los fps en device, ni el audio (`SFX_ENTER_DOOR`
   no suena todavía: el audio es TXT-10).
+
+## Trampas nuevas (fase 4: los encuentros)
+
+- **El porcentaje de la tabla no es un porcentaje.** `def_grass_wildmons` dice
+  `db 10 percent`, pero `.EncounterRate` hace `call Random` (0..255) y `cp b`: la
+  probabilidad por paso es **rate/256** (3,9 % con 10), no rate/100. Un test que asuma
+  10 % falla por un factor de 2,5.
+- **La ranura es otro dado.** `RandomRange(100)` contra `GrassMonProbTable`, acumulada
+  (30, 60, 80, 90, 95, 98, 100). Las dos tiradas están separadas: primero "¿hay
+  batalla?", después "¿qué mon?".
+- **A las 19:00 se usa la tabla de noche.** `GetTimeOfDayNotEve` colapsa `eve` en `nite`
+  antes de indexar; el header sólo guarda tres franjas. Indexar con `OW_TOD_EVE` (3) lee
+  fuera del array.
+- **La hierba necesita el código de colisión, no el bit de bloqueo.** Una celda de hierba
+  es caminable (`TALL_GRASS`/`LONG_GRASS` están en la lista de `COLL_WALKABLE` del
+  extractor), así que `mt_coll` no la distingue de una carretera. Hace falta una segunda
+  tabla por metatile (`mt_grass`) con los mismos cuatro cuadrantes y el mismo orden
+  `TL, TR, BL, BR`.
+- **Los labels de `evos_attacks.asm` llevan la forma.** `PC_SPECIES_RATTATA` es
+  `RattataPlainEvosAttacks`: buscar la lista por el nombre del constante falla y el mon se
+  queda sin movimientos (Struggle eterno). El extractor registra el alias quitando el
+  sufijo `Plain`.
+- **Un `/*` dentro de un comentario generado es un `-Werror`.** La cabecera emitida decía
+  `data/wild/*_grass.asm` dentro de un `/* ... */` y todos los tests dejaron de compilar
+  por `"/*" within comment`. Al escribir comentarios en los headers generados, evitar el
+  par literal.
+- **El cooldown son cinco pasos, y el quinto tira.** `CheckWildEncounterCooldown`
+  decrementa y devuelve "no" salvo cuando llega a cero: con 5 se saltan cuatro pasos. Al
+  cerrar una batalla hay que reactivarlo (`ow_encounter_cooldown`).
+- **Verificar el encuentro en pantalla no sale con `MOTE_KEYS`.** La captura
+  `artifacts/enc_grass.png` (Sentret Lv3 sobre hierba, Cyndaquil Lv5) se hizo con un
+  parche temporal de `g_init` que coloca al jugador junto a la hierba y una semilla que
+  acierta en el primer paso; después se revirtió y se recompiló. La receta está en
+  `docs/05`.

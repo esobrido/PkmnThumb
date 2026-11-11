@@ -9,6 +9,8 @@
 static const uint8_t blocks[2] = { 0, 1 };
 static const uint8_t mt_tiles[2][16] = { { 0 }, { 0 } };
 static const uint8_t mt_coll[2] = { 0x0, 0x8 };
+/* block 0: its top-right cell is tall grass (a walkable collision code) */
+static const uint8_t mt_grass[2] = { 0x2, 0x0 };
 static const uint8_t mt_pal[2 * 16] = { 0 };
 
 static OwMap make_map(void) {
@@ -18,6 +20,7 @@ static OwMap make_map(void) {
     m.blocks = blocks;
     m.mt_tiles = mt_tiles;
     m.mt_coll = mt_coll;
+    m.mt_grass = mt_grass;
     m.mt_pal = mt_pal;
     m.cells = 0;
     return m;
@@ -25,6 +28,21 @@ static OwMap make_map(void) {
 
 int main(void) {
     OwMap m = make_map();
+
+    /* grass reads the collision code table, not the blocked mask: block 0's
+     * top-right quadrant is walkable tall grass, block 1 is not grass at all */
+    CHECK_EQ(ow_cell_grass(&m, 1, 0), 1);
+    CHECK_EQ(ow_cell_grass(&m, 0, 0), 0);
+    CHECK_EQ(ow_cell_grass(&m, 1, 1), 0);
+    CHECK_EQ(ow_cell_grass(&m, 3, 0), 0);
+    CHECK_EQ(ow_cell_grass(&m, -1, 0), 0);
+    CHECK_EQ(ow_cell_grass(&m, 4, 0), 0);
+    CHECK_EQ(ow_px_grass(&m, 16, 0), 1);
+    CHECK_EQ(ow_px_grass(&m, 0, 0), 0);
+    /* a map without the table never reports grass */
+    OwMap ng = make_map();
+    ng.mt_grass = 0;
+    CHECK_EQ(ow_cell_grass(&ng, 1, 0), 0);
 
     /* block ids, with out-of-bounds reading as the maps' border block (0) */
     CHECK_EQ(ow_block_at(&m, 0, 0), 0);

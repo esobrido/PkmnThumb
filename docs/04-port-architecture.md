@@ -319,12 +319,42 @@ Lo que no se puede deducir del original a 128×128:
   dicen qué sistema esperan (la pantalla de equipo de GAM-02, los objetos de BAT-04 y la
   huida de BAT-05) en vez de fingir un efecto.
 
-`game.c` entra en la batalla con un atajo de depuración (RB + LB a la vez), porque no hay
-encuentros en la hierba alta todavía y el juego no tiene equipo con el que elegir mon: el
-jugador pelea con un Cyndaquil de nivel 5 creado la primera vez y conservado entre
-batallas (para que la experiencia se vea), y el salvaje es un Rattata de nivel 3 nuevo
-cada vez. Mientras la batalla está abierta, el mapa no se dibuja: el render de bandas
-pinta el fondo y el overlay sólo pinta la pantalla de batalla.
+Una batalla empieza **sola al pisar hierba alta** en un mapa con tabla (hoy la Ruta 29);
+RB + LB a la vez sigue abriendo una batalla de depuración contra un Rattata, para ver la
+pantalla lejos del césped. Como el juego no tiene equipo todavía (GAM-02), el jugador
+pelea con un Cyndaquil de nivel 5 creado la primera vez y conservado entre batallas (para
+que la experiencia y las subidas de nivel se vean). Mientras la batalla está abierta, el
+mapa no se dibuja: el render de bandas pinta el fondo y el overlay sólo pinta la pantalla
+de batalla.
+
+## Encuentros en la hierba
+
+La cadena es la del original: el paso termina en una celda cuya colisión es `TALL_GRASS` o
+`LONG_GRASS` → `ow_encounter_step` tira → un acierto hace el mon y abre la pantalla.
+
+- **La tabla es la del juego**, no una inventada: `tools/extract.py` lee
+  `def_grass_wildmons <MAP>` de `data/wild/<región>_grass.asm` (el byte de porcentaje y
+  tres franjas de siete `wildmon nivel, especie`) y emite `gen/wild.h`. Sólo los mapas
+  del build tienen tabla; el resto no aparece en el header.
+- **La probabilidad no es el porcentaje que dice el comentario.** `.EncounterRate`
+  compara el byte de la tabla (10 en la Ruta 29) contra `Random`, que da 0..255, así que
+  es **rate/256** — un 3,9 % por paso, no un 10 %. La ranura se elige aparte con un 0..99
+  contra `GrassMonProbTable` (30, 60, 80, 90, 95, 98, 100 acumulados).
+- **De noche es de noche también al atardecer**: `GetTimeOfDayNotEve` hace que la franja
+  `eve` use la tabla `nite`. El header guarda tres franjas, como el original.
+- **Cinco pasos de espera tras la batalla** (`SetUpFiveStepWildEncounterCooldown`): el
+  contador baja en cada paso y el que llega a cero es el primero que vuelve a tirar.
+- **La hierba es un código de colisión, no un bit de bloqueo.** Una celda de hierba es
+  caminable, así que el extractor emite además de `mt_coll` una tabla `mt_grass` por
+  tileset con los mismos cuatro cuadrantes; `ow/map` la consulta sin mirar el bloqueo.
+- **Un salvaje necesita movimientos.** Se extraen las listas de subida de nivel
+  (`data/pokemon/evos_attacks.asm`) pero **sólo de las especies que el build puede
+  encontrar** (las de las tablas más `CYNDAQUIL`, el mon del jugador): las 251 serían
+  ~6 KB. `mon_init_moves` enseña las que ya sabe a su nivel y se queda con las cuatro
+  últimas, como `GiveMonInitialMoveset`.
+
+Con eso, la puerta F4 se queda a un paso: el encuentro y la batalla funcionan con los
+datos del original; lo que falta es capturar (BAT-05), que no está.
 
 ## Texto
 
@@ -692,7 +722,10 @@ los llama nadie, así que el enlazador los tira; el `.bss` sube 4 B. La 0.20.0
 (experiencia y niveles: `mon/level` más `mon_add_exp`) y la 0.21.0 (el motor de batalla:
 `battle/type`, `battle/damage` y `battle/turn`) tampoco mueven el `.mote` ni el `.bss`,
 por el mismo motivo. La 0.22.0 sí lo mueve, porque `game.c` ya llama a la pantalla de
-batalla: de 83 776 B a **111 896 B** de `.mote` y de 3 812 B a **4 488 B** de `.bss`. El presupuesto de flash no es
+batalla: de 83 776 B a **111 896 B** de `.mote`. La 0.23.0 añade **1 516 B** más
+(111 896 → **113 412 B**): las tablas de la Ruta 29 (7 ranuras × 3 franjas, 44 B), las
+listas de subida de nivel de las seis especies obtenibles (~300 B), `ow/encounter.c`
+(302 B de `.text`) y las llamadas desde `game.c`. El presupuesto de flash no es
 el problema en esta fase: lo será la extracción en lote (458 mapas, 53 tilesets), que es
 CON-01/CON-02.
 

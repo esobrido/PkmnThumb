@@ -19,3 +19,15 @@ int ow_cell_blocked(const OwMap *m, int cx, int cy) {
 int ow_px_blocked(const OwMap *m, int px, int py) {
     return ow_cell_blocked(m, px / OW_STEP_PX, py / OW_STEP_PX);
 }
+
+int ow_cell_grass(const OwMap *m, int cx, int cy) {
+    if (!m->mt_grass || cx < 0 || cy < 0) return 0;
+    int bx = cx / 2, by = cy / 2;
+    if (bx >= m->w || by >= m->h) return 0;
+    int quad = (cy & 1) * 2 + (cx & 1);
+    return (m->mt_grass[ow_block_at(m, bx, by)] >> quad) & 1;
+}
+
+int ow_px_grass(const OwMap *m, int px, int py) {
+    return ow_cell_grass(m, px / OW_STEP_PX, py / OW_STEP_PX);
+}

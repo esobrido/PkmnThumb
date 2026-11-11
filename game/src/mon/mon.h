@@ -22,6 +22,7 @@
 
 #include "gen/moves.h"
 #include "gen/pokemon.h"
+#include "gen/learn.h"      /* uses PC_MOVE_*, so it comes after moves.h */
 #include "mon/level.h"
 
 /* Names are the game's charmap bytes: 10 glyphs plus a terminator (MON_NAME_LENGTH). */
@@ -70,6 +71,11 @@ const uint8_t *mon_name(const Mon *m, int *len);
 
 /* Teach a move in a slot and fill that slot's PP from the move table. */
 void mon_set_move(Mon *m, int slot, int move);
+
+/* Fill the moves from the species' level-up list: every move it already knows
+ * at this level, keeping the last four (GiveMonInitialMoveset). A species with
+ * no extracted learnset gets nothing; the battle then falls back to Struggle. */
+void mon_init_moves(Mon *m);
 
 /* A Pokémon Center visit: full HP and no status. PP is not restored, as in the
  * original (that is what Ethers are for). */

@@ -21,6 +21,8 @@
  *   ow/connect walking between two maps      tests/unit/test_ow_connect.c
  *   ow/clock   the in-game clock and the palette group an hour picks
  *                                            tests/unit/test_ow_clock.c
+ *   ow/encounter the grass roll before a wild battle
+ *                                            tests/unit/test_ow_encounter.c
  *   gfx_sprite 2bpp expansion and blitting   tests/unit/test_gfx_sprite.c
  *
  * Geometry (identical to the Game Boy): a map "block" is one metatile, 32x32 px
@@ -48,9 +50,11 @@
 #include "ow/warp.h"
 #include "ow/connect.h"
 #include "ow/clock.h"
+#include "ow/encounter.h"
 #include "gfx_sprite.h"
 #include "gen/text.h"
 #include "gen/scripts.h"
+#include "gen/wild.h"
 #include "bag.h"
 #include "script/vm.h"
 #include "script/trigger.h"
@@ -66,7 +70,7 @@ MOTE_GAME_MODULE();
  * gallery can tell an installed build from a newer one. Bump both when a
  * phase lands: the artefact name made by scripts/export.sh comes from here. */
 MOTE_GAME_META("Polished Crystal", "fan port");
-MOTE_GAME_VERSION("0.22.0");
+MOTE_GAME_VERSION("0.23.0");
 #ifdef MOTE_MODULE_BUILD
 #include "mote_module.h"
 MOTE_MODULE_HEADER();
@@ -284,6 +288,7 @@ static void load_map_tables(int index) {
     map.blocks = d->blocks;
     map.mt_tiles = tileset->mt_tiles;
     map.mt_coll = tileset->mt_coll;
+    map.mt_grass = tileset->mt_grass;
     map.mt_pal = &tileset->mt_pal[0][0];
     map.cells = 0;              /* set by mark_actors(), once the NPCs exist */
 
@@ -359,32 +364,40 @@ static void apply_text_speed(void) {
 }
 
 /* ---- the battle screen ---------------------------------------------------
- * There are no wild encounters yet (the grass table and the capture rule are
- * BAT-05/BAT-06) and game.c has no party screen to pick a mon from (GAM-02's
- * party is a module), so the screen is reached by a debug combination: hold RB
- * and LB at once. The player's mon is made once and kept, so a win's experience
- * levels it up for the next battle; the wild one is new every time.
+ * Wild battles start where the original's do: a step that ends on a grass cell
+ * of a map with a table rolls (ow/encounter), and a hit makes the mon that
+ * table names. game.c has no party screen yet (GAM-02's party is a module), so
+ * the player's side is one Cyndaquil made once and kept — a win's experience
+ * levels it up for the next battle. RB + LB still opens a debug battle, so the
+ * screen can be seen away from the grass.
  */
 static BattleUi battle_ui;
 static int battle_open;
 static Mon battle_mon;
 static int battle_mon_ready;
 static Mon battle_wild;
+static OwEncounter encounter;
+
+static void ensure_player_mon(void) {
+    if (battle_mon_ready) return;
+    mon_init(&battle_mon, PC_SPECIES_CYNDAQUIL, 5, 0x1234);
+    mon_init_moves(&battle_mon);
+    battle_mon_ready = 1;
+}
+
+/* Start a battle against a mon made on the spot. Its DVs come from the seed:
+ * the game rolls a 16-bit word, and every nibble combination is legal (the HP
+ * DV is derived from the others). */
+static void start_wild_battle(int species, int level, uint32_t seed) {
+    ensure_player_mon();
+    mon_init(&battle_wild, species, level, (uint16_t)(seed ^ (seed >> 16)));
+    mon_init_moves(&battle_wild);
+    battle_ui_start(&battle_ui, &battle_mon, &battle_wild, seed);
+    battle_open = 1;
+}
 
 static void start_battle(void) {
-    if (!battle_mon_ready) {
-        mon_init(&battle_mon, PC_SPECIES_CYNDAQUIL, 5, 0x1234);
-        mon_set_move(&battle_mon, 0, PC_MOVE_TACKLE);
-        mon_set_move(&battle_mon, 1, PC_MOVE_LEER);
-        mon_set_move(&battle_mon, 2, PC_MOVE_EMBER);
-        mon_set_move(&battle_mon, 3, PC_MOVE_SMOKESCREEN);
-        battle_mon_ready = 1;
-    }
-    mon_init(&battle_wild, PC_SPECIES_RATTATA, 3, 0x4321);
-    mon_set_move(&battle_wild, 0, PC_MOVE_TACKLE);
-    mon_set_move(&battle_wild, 1, PC_MOVE_LEER);
-    battle_ui_start(&battle_ui, &battle_mon, &battle_wild, 0x5eed1234u);
-    battle_open = 1;
+    start_wild_battle(PC_SPECIES_RATTATA, 3, 0x5eed1234u);
     mote->log("battle: debug wild RATTATA");
 }
 
@@ -405,6 +418,7 @@ static void g_init(void) {
     options_defaults(&options);
     bag_init(&bag);
     ow_clock_init(&clock_state, 10, 0);     /* the port has no time-set screen */
+    ow_encounter_init(&encounter, 0x51ee2d01u);
 
     ow_warp_init(&warp);
     load_map(PC_MAP_NEWBARKTOWN);
@@ -881,7 +895,11 @@ static void g_update(float dt) {
                 : mote_just_pressed(in, MOTE_BTN_A) ? BS_KEY_A
                 : mote_just_pressed(in, MOTE_BTN_B) ? BS_KEY_B : -1;
         if (key >= 0) battle_ui_key(&battle_ui, key);
-        if (battle_ui_done(&battle_ui)) battle_open = 0;
+        if (battle_ui_done(&battle_ui)) {
+            battle_open = 0;
+            /* The original waits five steps after a battle. */
+            ow_encounter_cooldown(&encounter);
+        }
         if (++perf_timer >= 60) { perf_timer = 0; log_perf(); }
         return;
     }
@@ -1020,6 +1038,20 @@ static void g_update(float dt) {
         int scene = pc_scene_active(&map_scene);
         if (pc_coord_event(map_scripts, player.px >> 4, player.py >> 4, scene, &at))
             script_begin(at, -1);
+    }
+
+    /* A wild encounter is the last thing a step can trigger, like the original's
+     * RandomEncounter: a door, a connection or a script on the same cell wins,
+     * and the battle takes over the pad on the next frame. */
+    if (player.just_arrived && !ow_warp_busy(&warp) && !script_active) {
+        OwEncounterOut hit;
+        const PcWildTable *wt = ow_encounter_table(map_index);
+        if (wt && ow_px_grass(&map, player.px, player.py) &&
+            ow_encounter_step(&encounter, wt, ow_clock_tod(clock_state.hour), 1, &hit)) {
+            mote->log("encounter: wild");
+            start_wild_battle(hit.species, hit.level, hit.seed);
+            return;
+        }
     }
 
     /* Actors animate per frame, not per pixel walked: a spinner keeps turning

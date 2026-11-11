@@ -93,6 +93,7 @@ llamando a `mote build game` directamente.
 | `game/src/ui/frame.c` | `tests/unit/test_ui_frame.c` |
 | `game/src/ui/options.c` | `tests/unit/test_ui_options.c` |
 | `game/src/bag.c` | `tests/unit/test_bag.c` |
+| `game/src/ow/encounter.c` | `tests/unit/test_ow_encounter.c` |
 | `game/src/script/trigger.c` | `tests/unit/test_script_trigger.c` |
 | `game/src/script/scene.c` | `tests/unit/test_script_scene.c` |
 | `game/src/script/vm.c` | `tests/unit/test_script_vm.c` |
